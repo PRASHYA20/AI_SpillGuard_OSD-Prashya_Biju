@@ -8,6 +8,15 @@ import os
 import cv2
 import segmentation_models_pytorch as smp
 import gdown
+import streamlit as st
+import requests
+import os
+from PIL import Image
+import numpy as np
+import io
+
+# Simple version without segmentation_models_pytorch
+# You might need to use a different model format
 
 # ------------------------
 # Model configuration
