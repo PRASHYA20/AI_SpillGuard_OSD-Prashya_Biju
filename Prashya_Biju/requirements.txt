@@ -1,13 +1,8 @@
-streamlit==1.28.0
-torch==2.0.1
-torchvision==0.15.2
-Pillow==10.0.1
-numpy==1.24.3
-segmentation-models-pytorch==0.3.3
-opencv-python==4.8.1
-gdown==4.7.1
 streamlit
 torch
 torchvision
-Pillow
 numpy
+Pillow
+segmentation-models-pytorch
+gdown
+opencv-python-headless
