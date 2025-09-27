@@ -7,7 +7,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 import os
+<<<<<<< HEAD
 import io
+=======
+>>>>>>> c047668 (Add Streamlit deployment files to root)
 
 # -----------------------------
 # Dropbox Model URL
@@ -16,6 +19,7 @@ MODEL_PATH = "oil_spill_model_deploy.pth"
 DROPBOX_URL = "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&st=w6qm08lh&dl=1"
 
 # -----------------------------
+<<<<<<< HEAD
 # Define your UNet model (example)
 # -----------------------------
 class DoubleConv(nn.Module):
@@ -70,6 +74,19 @@ class UNet(nn.Module):
         x = self.dc9(torch.cat([x, x1], dim=1))
         x = self.out_conv(x)
         return x
+=======
+# Define your DeepLabV3 model (same as training)
+# -----------------------------
+class DeepLabV3OilSpill(nn.Module):
+    def __init__(self, num_classes=1):
+        super(DeepLabV3OilSpill, self).__init__()
+        from torchvision import models
+        self.model = models.segmentation.deeplabv3_resnet50(pretrained=False)
+        self.model.classifier[4] = nn.Conv2d(256, num_classes, kernel_size=1)
+
+    def forward(self, x):
+        return self.model(x)
+>>>>>>> c047668 (Add Streamlit deployment files to root)
 
 # -----------------------------
 # Download Model if not exists
@@ -88,7 +105,11 @@ def download_model():
 def load_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     download_model()
+<<<<<<< HEAD
     model = UNet(in_ch=3, out_ch=1)
+=======
+    model = DeepLabV3OilSpill(num_classes=1)
+>>>>>>> c047668 (Add Streamlit deployment files to root)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
     model.to(device)
     model.eval()
@@ -109,13 +130,18 @@ transform = T.Compose([
 # -----------------------------
 # Streamlit UI
 # -----------------------------
+<<<<<<< HEAD
 st.title("🌊 Oil Spill Segmentation (UNet)")
+=======
+st.title("🌊 Oil Spill Segmentation App")
+>>>>>>> c047668 (Add Streamlit deployment files to root)
 st.write("Upload a satellite image to detect possible oil spills.")
 
 uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
+<<<<<<< HEAD
     st.image(image, caption="Uploaded Image", use_container_width=True)
 
     # Preprocess
@@ -128,6 +154,22 @@ if uploaded_file is not None:
 
     # Threshold
     mask = (pred > 0.5).astype(np.uint8) * 255
+=======
+
+    # Show original image
+    st.image(image, caption="Uploaded Image", use_container_width=True)
+
+    # Preprocess
+    input_tensor = transform(image).unsqueeze(0).to(device)
+
+    # Inference
+    with torch.no_grad():
+        output = model(input_tensor)["out"]
+        pred = torch.sigmoid(output).squeeze().cpu().numpy()
+
+    # Threshold
+    mask = (pred > 0.5).astype(np.uint8)
+>>>>>>> c047668 (Add Streamlit deployment files to root)
 
     # Display
     fig, ax = plt.subplots(1, 2, figsize=(10, 5))
@@ -141,6 +183,7 @@ if uploaded_file is not None:
     ax[1].axis("off")
 
     st.pyplot(fig)
+<<<<<<< HEAD
 
     # -----------------------------
     # Download Mask Button
@@ -156,3 +199,5 @@ if uploaded_file is not None:
         file_name="oil_spill_mask.png",
         mime="image/png"
     )
+=======
+>>>>>>> c047668 (Add Streamlit deployment files to root)
