@@ -7,10 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import requests
 import os
-<<<<<<< HEAD
 import io
-=======
->>>>>>> c047668 (Add Streamlit deployment files to root)
 
 # -----------------------------
 # Dropbox Model URL
@@ -19,8 +16,7 @@ MODEL_PATH = "oil_spill_model_deploy.pth"
 DROPBOX_URL = "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&st=w6qm08lh&dl=1"
 
 # -----------------------------
-<<<<<<< HEAD
-# Define your UNet model (example)
+# Define your UNet model
 # -----------------------------
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
@@ -74,19 +70,6 @@ class UNet(nn.Module):
         x = self.dc9(torch.cat([x, x1], dim=1))
         x = self.out_conv(x)
         return x
-=======
-# Define your DeepLabV3 model (same as training)
-# -----------------------------
-class DeepLabV3OilSpill(nn.Module):
-    def __init__(self, num_classes=1):
-        super(DeepLabV3OilSpill, self).__init__()
-        from torchvision import models
-        self.model = models.segmentation.deeplabv3_resnet50(pretrained=False)
-        self.model.classifier[4] = nn.Conv2d(256, num_classes, kernel_size=1)
-
-    def forward(self, x):
-        return self.model(x)
->>>>>>> c047668 (Add Streamlit deployment files to root)
 
 # -----------------------------
 # Download Model if not exists
@@ -94,9 +77,16 @@ class DeepLabV3OilSpill(nn.Module):
 def download_model():
     if not os.path.exists(MODEL_PATH):
         st.write("🔽 Downloading model from Dropbox...")
-        r = requests.get(DROPBOX_URL, allow_redirects=True)
-        with open(MODEL_PATH, "wb") as f:
-            f.write(r.content)
+        try:
+            r = requests.get(DROPBOX_URL, allow_redirects=True, timeout=60)
+            r.raise_for_status()
+            with open(MODEL_PATH, "wb") as f:
+                f.write(r.content)
+            st.success("✅ Model downloaded successfully!")
+        except Exception as e:
+            st.error(f"❌ Error downloading model: {e}")
+            return False
+    return True
 
 # -----------------------------
 # Load Model
@@ -104,18 +94,28 @@ def download_model():
 @st.cache_resource
 def load_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    download_model()
-<<<<<<< HEAD
-    model = UNet(in_ch=3, out_ch=1)
-=======
-    model = DeepLabV3OilSpill(num_classes=1)
->>>>>>> c047668 (Add Streamlit deployment files to root)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-    model.to(device)
-    model.eval()
-    return model, device
-
-model, device = load_model()
+    st.write(f"🖥️ Using device: {device}")
+    
+    if not download_model():
+        return None, device
+    
+    try:
+        model = UNet(in_ch=3, out_ch=1)
+        # Load with map_location to handle CPU/GPU compatibility
+        state_dict = torch.load(MODEL_PATH, map_location=torch.device(device))
+        
+        # Handle state dict format (it might be nested under 'model' key)
+        if 'model' in state_dict:
+            state_dict = state_dict['model']
+        
+        model.load_state_dict(state_dict)
+        model.to(device)
+        model.eval()
+        st.success("✅ Model loaded successfully!")
+        return model, device
+    except Exception as e:
+        st.error(f"❌ Error loading model: {e}")
+        return None, device
 
 # -----------------------------
 # Preprocessing
@@ -130,74 +130,145 @@ transform = T.Compose([
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-<<<<<<< HEAD
-st.title("🌊 Oil Spill Segmentation (UNet)")
-=======
-st.title("🌊 Oil Spill Segmentation App")
->>>>>>> c047668 (Add Streamlit deployment files to root)
-st.write("Upload a satellite image to detect possible oil spills.")
+st.set_page_config(
+    page_title="Oil Spill Detection",
+    page_icon="🌊",
+    layout="wide"
+)
 
-uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
+st.title("🌊 Oil Spill Segmentation (UNet)")
+st.write("Upload a satellite image to detect possible oil spills using UNet architecture.")
+
+# Sidebar with info
+with st.sidebar:
+    st.header("About")
+    st.write("This app uses a custom UNet model to detect oil spills in satellite imagery.")
+    st.write("**Instructions:**")
+    st.write("1. Upload a satellite image (JPG, JPEG, PNG)")
+    st.write("2. The UNet model will process the image")
+    st.write("3. View the segmentation results")
+    st.write("4. Download the mask if needed")
+    
+    st.header("Model Info")
+    st.write(f"Framework: PyTorch {torch.__version__}")
+    st.write("Architecture: Custom UNet")
+    st.write("Input size: 256x256 pixels")
+    
+    # Confidence threshold slider
+    confidence_threshold = st.slider(
+        "Confidence Threshold",
+        min_value=0.1,
+        max_value=0.9,
+        value=0.5,
+        step=0.1,
+        help="Adjust the sensitivity of spill detection"
+    )
+
+# Initialize model
+if 'model_loaded' not in st.session_state:
+    with st.spinner("Loading UNet model..."):
+        model, device = load_model()
+        st.session_state.model = model
+        st.session_state.device = device
+        st.session_state.model_loaded = True
+else:
+    model = st.session_state.model
+    device = st.session_state.device
+
+uploaded_file = st.file_uploader("Upload Satellite Image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
+    # Display original image
     image = Image.open(uploaded_file).convert("RGB")
-<<<<<<< HEAD
-    st.image(image, caption="Uploaded Image", use_container_width=True)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.image(image, caption="Original Image", use_container_width=True)
+    
+    if model is None:
+        st.error("❌ Model failed to load. Please check the console for errors.")
+    else:
+        # Preprocess
+        input_tensor = transform(image).unsqueeze(0).to(device)
 
-    # Preprocess
-    input_tensor = transform(image).unsqueeze(0).to(device)
+        # Inference
+        with torch.no_grad():
+            output = model(input_tensor)
+            pred = torch.sigmoid(output).squeeze().cpu().numpy()
 
-    # Inference
-    with torch.no_grad():
-        output = model(input_tensor)
-        pred = torch.sigmoid(output).squeeze().cpu().numpy()
+        # Apply threshold
+        mask = (pred > confidence_threshold).astype(np.uint8) * 255
 
-    # Threshold
-    mask = (pred > 0.5).astype(np.uint8) * 255
-=======
+        # Create overlay
+        overlay = np.array(image.resize((256, 256)))
+        mask_resized = Image.fromarray(mask).resize((overlay.shape[1], overlay.shape[0]))
+        mask_array = np.array(mask_resized)
+        
+        # Create visualization
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+        
+        # Original image
+        ax1.imshow(image)
+        ax1.set_title("Original Image")
+        ax1.axis("off")
+        
+        # Prediction mask
+        ax2.imshow(mask, cmap="hot")
+        ax2.set_title("Prediction Mask")
+        ax2.axis("off")
+        
+        # Overlay
+        ax3.imshow(overlay)
+        ax3.imshow(mask_array, cmap="Reds", alpha=0.5)
+        ax3.set_title("Overlay (Red = Oil Spill)")
+        ax3.axis("off")
+        
+        plt.tight_layout()
+        
+        with col2:
+            st.pyplot(fig)
+        
+        # Statistics
+        spill_area = np.sum(mask > 0) / (mask.shape[0] * mask.shape[1]) * 100
+        max_confidence = np.max(pred) * 100
+        
+        st.subheader("📊 Detection Statistics")
+        col3, col4, col5 = st.columns(3)
+        
+        with col3:
+            st.metric("Spill Area Percentage", f"{spill_area:.2f}%")
+        
+        with col4:
+            st.metric("Max Confidence", f"{max_confidence:.2f}%")
+        
+        with col5:
+            status = "🟢 No Spill" if spill_area < 1.0 else "🔴 Spill Detected"
+            st.metric("Status", status)
+        
+        # Download Mask Button
+        mask_img = Image.fromarray(mask.astype(np.uint8))
+        buf = io.BytesIO()
+        mask_img.save(buf, format="PNG")
+        byte_im = buf.getvalue()
 
-    # Show original image
-    st.image(image, caption="Uploaded Image", use_container_width=True)
+        st.download_button(
+            label="💾 Download Predicted Mask",
+            data=byte_im,
+            file_name="oil_spill_mask.png",
+            mime="image/png",
+            use_container_width=True
+        )
 
-    # Preprocess
-    input_tensor = transform(image).unsqueeze(0).to(device)
+else:
+    st.info("👆 Please upload a satellite image to get started.")
 
-    # Inference
-    with torch.no_grad():
-        output = model(input_tensor)["out"]
-        pred = torch.sigmoid(output).squeeze().cpu().numpy()
-
-    # Threshold
-    mask = (pred > 0.5).astype(np.uint8)
->>>>>>> c047668 (Add Streamlit deployment files to root)
-
-    # Display
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(image)
-    ax[0].set_title("Original Image")
-    ax[0].axis("off")
-
-    ax[1].imshow(image)
-    ax[1].imshow(mask, cmap="Reds", alpha=0.5)
-    ax[1].set_title("Predicted Oil Spill Mask")
-    ax[1].axis("off")
-
-    st.pyplot(fig)
-<<<<<<< HEAD
-
-    # -----------------------------
-    # Download Mask Button
-    # -----------------------------
-    mask_img = Image.fromarray(mask.astype(np.uint8))
-    buf = io.BytesIO()
-    mask_img.save(buf, format="PNG")
-    byte_im = buf.getvalue()
-
-    st.download_button(
-        label="💾 Download Predicted Mask",
-        data=byte_im,
-        file_name="oil_spill_mask.png",
-        mime="image/png"
-    )
-=======
->>>>>>> c047668 (Add Streamlit deployment files to root)
+# Footer
+st.markdown("---")
+st.markdown("### How it works:")
+st.markdown("""
+- **UNet Architecture**: The model uses an encoder-decoder structure with skip connections
+- **Segmentation**: Predicts pixel-wise probabilities for oil spill presence
+- **Post-processing**: Applies threshold to create binary mask
+- **Visualization**: Overlays detection results on original image
+""")
