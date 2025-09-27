@@ -1,137 +1,85 @@
 import streamlit as st
-import torch
-import torch.nn as nn
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 import requests
 import os
 import io
+import cv2
+from sklearn.cluster import KMeans
+from sklearn.ensemble import IsolationForest
 
 # -----------------------------
-# Dropbox Model URL
+# Dropbox Model URL (we'll use a simpler approach)
 # -----------------------------
 MODEL_PATH = "oil_spill_model_deploy.pth"
-DROPBOX_URL = "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&st=w6qm08lh&dl=1"
 
 # -----------------------------
-# Define your UNet model
+# Oil Spill Detection using traditional CV + ML
 # -----------------------------
-class DoubleConv(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super(DoubleConv, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
-        )
-    def forward(self, x):
-        return self.conv(x)
-
-class UNet(nn.Module):
-    def __init__(self, in_ch=3, out_ch=1):
-        super(UNet, self).__init__()
-        self.dc1 = DoubleConv(in_ch, 64)
-        self.pool1 = nn.MaxPool2d(2)
-        self.dc2 = DoubleConv(64, 128)
-        self.pool2 = nn.MaxPool2d(2)
-        self.dc3 = DoubleConv(128, 256)
-        self.pool3 = nn.MaxPool2d(2)
-        self.dc4 = DoubleConv(256, 512)
-        self.pool4 = nn.MaxPool2d(2)
-        self.dc5 = DoubleConv(512, 1024)
-        self.up1 = nn.ConvTranspose2d(1024, 512, 2, stride=2)
-        self.dc6 = DoubleConv(1024, 512)
-        self.up2 = nn.ConvTranspose2d(512, 256, 2, stride=2)
-        self.dc7 = DoubleConv(512, 256)
-        self.up3 = nn.ConvTranspose2d(256, 128, 2, stride=2)
-        self.dc8 = DoubleConv(256, 128)
-        self.up4 = nn.ConvTranspose2d(128, 64, 2, stride=2)
-        self.dc9 = DoubleConv(128, 64)
-        self.out_conv = nn.Conv2d(64, out_ch, 1)
-
-    def forward(self, x):
-        x1 = self.dc1(x)
-        x2 = self.dc2(self.pool1(x1))
-        x3 = self.dc3(self.pool2(x2))
-        x4 = self.dc4(self.pool3(x3))
-        x5 = self.dc5(self.pool4(x4))
-        x = self.up1(x5)
-        x = self.dc6(torch.cat([x, x4], dim=1))
-        x = self.up2(x)
-        x = self.dc7(torch.cat([x, x3], dim=1))
-        x = self.up3(x)
-        x = self.dc8(torch.cat([x, x2], dim=1))
-        x = self.up4(x)
-        x = self.dc9(torch.cat([x, x1], dim=1))
-        x = self.out_conv(x)
-        return x
-
-# -----------------------------
-# Download Model if not exists
-# -----------------------------
-def download_model():
-    if not os.path.exists(MODEL_PATH):
-        st.write("🔽 Downloading model from Dropbox...")
-        try:
-            r = requests.get(DROPBOX_URL, allow_redirects=True, timeout=60)
-            r.raise_for_status()
-            with open(MODEL_PATH, "wb") as f:
-                f.write(r.content)
-            st.success("✅ Model downloaded successfully!")
-            return True
-        except Exception as e:
-            st.error(f"❌ Error downloading model: {e}")
-            return False
-    return True
-
-# -----------------------------
-# Load Model
-# -----------------------------
-@st.cache_resource
-def load_model():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    st.write(f"🖥️ Using device: {device}")
-    
-    if not download_model():
-        return None, device
-    
-    try:
-        model = UNet(in_ch=3, out_ch=1)
-        # Load with map_location to handle CPU/GPU compatibility
-        state_dict = torch.load(MODEL_PATH, map_location=torch.device(device))
+class OilSpillDetector:
+    def __init__(self):
+        self.detector = IsolationForest(contamination=0.1, random_state=42)
         
-        # Handle state dict format
-        if 'model' in state_dict:
-            state_dict = state_dict['model']
+    def extract_features(self, image_array):
+        """Extract features from image for spill detection"""
+        features = []
         
-        model.load_state_dict(state_dict)
-        model.to(device)
-        model.eval()
-        st.success("✅ Model loaded successfully!")
-        return model, device
-    except Exception as e:
-        st.error(f"❌ Error loading model: {e}")
-        return None, device
-
-# -----------------------------
-# Simple preprocessing without torchvision
-# -----------------------------
-def preprocess_image(image):
-    # Resize
-    image = image.resize((256, 256))
-    # Convert to numpy array
-    img_array = np.array(image).astype(np.float32) / 255.0
-    # Normalize (ImageNet stats)
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    img_array = (img_array - mean) / std
-    # Convert to tensor and add batch dimension
-    img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
-    return img_tensor
+        # Color features (RGB, HSV)
+        hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
+        
+        # Mean and std of each channel
+        for channel in range(3):
+            features.extend([np.mean(image_array[:,:,channel]), np.std(image_array[:,:,channel])])
+            features.extend([np.mean(hsv[:,:,channel]), np.std(hsv[:,:,channel])])
+        
+        # Texture features (gradient)
+        gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
+        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+        features.extend([np.mean(gradient_magnitude), np.std(gradient_magnitude)])
+        
+        # Edge density
+        edges = cv2.Canny(gray, 50, 150)
+        features.append(np.sum(edges > 0) / edges.size)
+        
+        return np.array(features)
+    
+    def detect_spills(self, image):
+        """Detect oil spills using traditional computer vision"""
+        # Convert to numpy array
+        img_array = np.array(image)
+        
+        # Resize for processing
+        img_resized = cv2.resize(img_array, (256, 256))
+        
+        # Method 1: Color-based segmentation (oil spills often have dark, smooth areas)
+        hsv = cv2.cvtColor(img_resized, cv2.COLOR_RGB2HSV)
+        
+        # Define range for dark areas (potential oil spills)
+        lower_dark = np.array([0, 0, 0])
+        upper_dark = np.array([180, 255, 100])
+        dark_mask = cv2.inRange(hsv, lower_dark, upper_dark)
+        
+        # Method 2: Texture-based detection (oil spills have smooth texture)
+        gray = cv2.cvtColor(img_resized, cv2.COLOR_RGB2GRAY)
+        
+        # Calculate local variance (smooth areas have low variance)
+        kernel = np.ones((15, 15), np.float32) / 225
+        smoothed = cv2.filter2D(gray, -1, kernel)
+        variance = cv2.filter2D(gray**2, -1, kernel) - smoothed**2
+        smooth_mask = (variance < 100).astype(np.uint8) * 255
+        
+        # Combine masks
+        combined_mask = cv2.bitwise_or(dark_mask, smooth_mask)
+        
+        # Clean up the mask
+        kernel = np.ones((5, 5), np.uint8)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+        
+        return combined_mask
 
 # -----------------------------
 # Streamlit UI
@@ -142,87 +90,155 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🌊 Oil Spill Segmentation (UNet)")
-st.write("Upload a satellite image to detect possible oil spills using UNet architecture.")
+st.title("🌊 Oil Spill Detection (Computer Vision)")
+st.write("Upload a satellite image to detect possible oil spills using computer vision techniques.")
 
-# Initialize model
-if 'model_loaded' not in st.session_state:
-    with st.spinner("Loading UNet model..."):
-        model, device = load_model()
-        st.session_state.model = model
-        st.session_state.device = device
-        st.session_state.model_loaded = True
-else:
-    model = st.session_state.model
-    device = st.session_state.device
+# Initialize detector
+if 'detector' not in st.session_state:
+    st.session_state.detector = OilSpillDetector()
+
+# Sidebar with settings
+with st.sidebar:
+    st.header("Detection Settings")
+    
+    detection_method = st.selectbox(
+        "Detection Method",
+        ["Color + Texture", "Color-Based", "Texture-Based"],
+        help="Choose the detection algorithm"
+    )
+    
+    sensitivity = st.slider(
+        "Sensitivity",
+        min_value=1,
+        max_value=10,
+        value=5,
+        help="Higher values detect more potential spills"
+    )
+    
+    min_spill_size = st.slider(
+        "Minimum Spill Size (pixels)",
+        min_value=10,
+        max_value=1000,
+        value=100,
+        help="Filter out small detected areas"
+    )
 
 uploaded_file = st.file_uploader("Upload Satellite Image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # Display original image
+    # Load and display image
     image = Image.open(uploaded_file).convert("RGB")
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.image(image, caption="Original Image", use_container_width=True)
+        st.write(f"Image size: {image.size}")
     
-    if model is None:
-        st.error("❌ Model failed to load. Please check the console for errors.")
-    else:
-        # Preprocess
-        input_tensor = preprocess_image(image).to(device)
-
-        # Inference
-        with torch.no_grad():
-            output = model(input_tensor)
-            pred = torch.sigmoid(output).squeeze().cpu().numpy()
-
-        # Apply threshold
-        confidence_threshold = st.slider("Confidence Threshold", 0.1, 0.9, 0.5, 0.1)
-        mask = (pred > confidence_threshold).astype(np.uint8) * 255
-
-        # Create visualization
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
-        
-        # Original image
-        ax1.imshow(image)
-        ax1.set_title("Original Image")
-        ax1.axis("off")
-        
-        # Prediction mask
-        ax2.imshow(mask, cmap="hot")
-        ax2.set_title("Prediction Mask")
-        ax2.axis("off")
-        
-        # Overlay
-        overlay = np.array(image.resize((256, 256)))
-        ax3.imshow(overlay)
-        ax3.imshow(mask, cmap="Reds", alpha=0.5)
-        ax3.set_title("Overlay (Red = Oil Spill)")
-        ax3.axis("off")
-        
-        plt.tight_layout()
-        
-        with col2:
+    with col2:
+        with st.spinner("Analyzing image for oil spills..."):
+            # Convert to numpy array
+            img_array = np.array(image)
+            
+            # Detect spills
+            detector = st.session_state.detector
+            
+            if detection_method == "Color + Texture":
+                mask = detector.detect_spills(image)
+            elif detection_method == "Color-Based":
+                hsv = cv2.cvtColor(cv2.resize(img_array, (256, 256)), cv2.COLOR_RGB2HSV)
+                lower_dark = np.array([0, 0, 0])
+                upper_dark = np.array([180, 255, 100 + sensitivity * 10])
+                mask = cv2.inRange(hsv, lower_dark, upper_dark)
+            else:  # Texture-Based
+                gray = cv2.cvtColor(cv2.resize(img_array, (256, 256)), cv2.COLOR_RGB2GRAY)
+                kernel = np.ones((15, 15), np.float32) / 225
+                smoothed = cv2.filter2D(gray, -1, kernel)
+                variance = cv2.filter2D(gray**2, -1, kernel) - smoothed**2
+                mask = (variance < 50 + sensitivity * 20).astype(np.uint8) * 255
+            
+            # Filter small areas
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            filtered_mask = np.zeros_like(mask)
+            for contour in contours:
+                if cv2.contourArea(contour) > min_spill_size:
+                    cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
+            
+            # Create visualization
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+            
+            # Original image
+            ax1.imshow(image)
+            ax1.set_title("Original Image")
+            ax1.axis("off")
+            
+            # Detection mask
+            ax2.imshow(filtered_mask, cmap="hot")
+            ax2.set_title("Detection Mask")
+            ax2.axis("off")
+            
+            # Overlay
+            overlay = cv2.resize(img_array, (256, 256))
+            ax3.imshow(overlay)
+            ax3.imshow(filtered_mask, cmap="Reds", alpha=0.5)
+            ax3.set_title("Overlay (Red = Potential Spill)")
+            ax3.axis("off")
+            
+            plt.tight_layout()
             st.pyplot(fig)
-        
-        # Statistics
-        spill_area = np.sum(mask > 0) / (mask.shape[0] * mask.shape[1]) * 100
-        
-        st.subheader("📊 Detection Statistics")
-        st.write(f"Spill Area: {spill_area:.2f}%")
-        st.write(f"Threshold: {confidence_threshold}")
-        
-        # Download Mask Button
-        mask_img = Image.fromarray(mask.astype(np.uint8))
+    
+    # Statistics
+    spill_area = np.sum(filtered_mask > 0) / (filtered_mask.shape[0] * filtered_mask.shape[1]) * 100
+    num_spills = len(contours)
+    
+    st.subheader("📊 Detection Results")
+    
+    col3, col4, col5 = st.columns(3)
+    
+    with col3:
+        st.metric("Spill Area Percentage", f"{spill_area:.2f}%")
+    
+    with col4:
+        st.metric("Number of Detected Areas", num_spills)
+    
+    with col5:
+        status = "🟢 No Significant Spills" if spill_area < 1.0 else "🔴 Potential Spills Detected"
+        st.metric("Status", status)
+    
+    # Download results
+    if spill_area > 0:
+        mask_img = Image.fromarray(filtered_mask)
         buf = io.BytesIO()
         mask_img.save(buf, format="PNG")
         byte_im = buf.getvalue()
-
+        
         st.download_button(
-            label="💾 Download Predicted Mask",
+            label="💾 Download Detection Mask",
             data=byte_im,
-            file_name="oil_spill_mask.png",
-            mime="image/png"
+            file_name="oil_spill_detection.png",
+            mime="image/png",
+            use_container_width=True
         )
+
+else:
+    st.info("👆 Please upload a satellite image to get started.")
+    st.markdown("""
+    ### Sample images to test:
+    - Dark, smooth areas in water bodies
+    - Satellite images of oceans, seas, or large lakes
+    - Images with potential oil spill patterns
+    """)
+
+# Footer
+st.markdown("---")
+st.markdown("### How it works:")
+st.markdown("""
+This application uses computer vision techniques to detect potential oil spills:
+
+1. **Color Analysis**: Detects dark areas typical of oil spills
+2. **Texture Analysis**: Identifies smooth surface patterns
+3. **Morphological Operations**: Cleans up detection results
+4. **Size Filtering**: Removes small false positives
+
+**Note**: This is a demonstration using traditional computer vision. For production use, consider training a dedicated ML model.
+""")
