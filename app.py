@@ -1,244 +1,183 @@
 import streamlit as st
 import numpy as np
 from PIL import Image
-import matplotlib.pyplot as plt
+import io
 import requests
 import os
-import io
-import cv2
-from sklearn.cluster import KMeans
-from sklearn.ensemble import IsolationForest
 
 # -----------------------------
-# Dropbox Model URL (we'll use a simpler approach)
+# Simple Oil Spill Detection App
 # -----------------------------
-MODEL_PATH = "oil_spill_model_deploy.pth"
 
-# -----------------------------
-# Oil Spill Detection using traditional CV + ML
-# -----------------------------
-class OilSpillDetector:
-    def __init__(self):
-        self.detector = IsolationForest(contamination=0.1, random_state=42)
-        
-    def extract_features(self, image_array):
-        """Extract features from image for spill detection"""
-        features = []
-        
-        # Color features (RGB, HSV)
-        hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
-        
-        # Mean and std of each channel
-        for channel in range(3):
-            features.extend([np.mean(image_array[:,:,channel]), np.std(image_array[:,:,channel])])
-            features.extend([np.mean(hsv[:,:,channel]), np.std(hsv[:,:,channel])])
-        
-        # Texture features (gradient)
-        gray = cv2.cvtColor(image_array, cv2.COLOR_RGB2GRAY)
-        grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
-        features.extend([np.mean(gradient_magnitude), np.std(gradient_magnitude)])
-        
-        # Edge density
-        edges = cv2.Canny(gray, 50, 150)
-        features.append(np.sum(edges > 0) / edges.size)
-        
-        return np.array(features)
-    
-    def detect_spills(self, image):
-        """Detect oil spills using traditional computer vision"""
-        # Convert to numpy array
-        img_array = np.array(image)
-        
-        # Resize for processing
-        img_resized = cv2.resize(img_array, (256, 256))
-        
-        # Method 1: Color-based segmentation (oil spills often have dark, smooth areas)
-        hsv = cv2.cvtColor(img_resized, cv2.COLOR_RGB2HSV)
-        
-        # Define range for dark areas (potential oil spills)
-        lower_dark = np.array([0, 0, 0])
-        upper_dark = np.array([180, 255, 100])
-        dark_mask = cv2.inRange(hsv, lower_dark, upper_dark)
-        
-        # Method 2: Texture-based detection (oil spills have smooth texture)
-        gray = cv2.cvtColor(img_resized, cv2.COLOR_RGB2GRAY)
-        
-        # Calculate local variance (smooth areas have low variance)
-        kernel = np.ones((15, 15), np.float32) / 225
-        smoothed = cv2.filter2D(gray, -1, kernel)
-        variance = cv2.filter2D(gray**2, -1, kernel) - smoothed**2
-        smooth_mask = (variance < 100).astype(np.uint8) * 255
-        
-        # Combine masks
-        combined_mask = cv2.bitwise_or(dark_mask, smooth_mask)
-        
-        # Clean up the mask
-        kernel = np.ones((5, 5), np.uint8)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
-        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-        
-        return combined_mask
-
-# -----------------------------
-# Streamlit UI
-# -----------------------------
 st.set_page_config(
     page_title="Oil Spill Detection",
     page_icon="🌊",
     layout="wide"
 )
 
-st.title("🌊 Oil Spill Detection (Computer Vision)")
-st.write("Upload a satellite image to detect possible oil spills using computer vision techniques.")
+st.title("🌊 Oil Spill Detection App")
+st.write("Upload a satellite image for basic oil spill analysis.")
 
-# Initialize detector
-if 'detector' not in st.session_state:
-    st.session_state.detector = OilSpillDetector()
+def simple_spill_detection(image):
+    """Simple color-based spill detection"""
+    # Convert to numpy array
+    img_array = np.array(image)
+    
+    # Simple detection based on dark areas in blue regions
+    # Convert to HSV color space
+    import cv2
+    hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
+    
+    # Define ranges for dark blue areas (potential spills)
+    lower_blue = np.array([100, 50, 0])
+    upper_blue = np.array([140, 255, 100])
+    
+    # Create mask
+    mask = cv2.inRange(hsv, lower_blue, upper_blue)
+    
+    return mask
 
-# Sidebar with settings
-with st.sidebar:
-    st.header("Detection Settings")
+def basic_color_analysis(image):
+    """Basic color analysis without OpenCV"""
+    img_array = np.array(image)
     
-    detection_method = st.selectbox(
-        "Detection Method",
-        ["Color + Texture", "Color-Based", "Texture-Based"],
-        help="Choose the detection algorithm"
-    )
+    # Simple dark area detection
+    # Calculate brightness (average of RGB channels)
+    brightness = np.mean(img_array, axis=2)
     
-    sensitivity = st.slider(
-        "Sensitivity",
-        min_value=1,
-        max_value=10,
-        value=5,
-        help="Higher values detect more potential spills"
-    )
+    # Dark areas threshold (adjustable)
+    dark_threshold = 100
+    dark_mask = (brightness < dark_threshold).astype(np.uint8) * 255
     
-    min_spill_size = st.slider(
-        "Minimum Spill Size (pixels)",
-        min_value=10,
-        max_value=1000,
-        value=100,
-        help="Filter out small detected areas"
-    )
+    return dark_mask
 
-uploaded_file = st.file_uploader("Upload Satellite Image", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("Choose a satellite image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    # Load and display image
-    image = Image.open(uploaded_file).convert("RGB")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.image(image, caption="Original Image", use_container_width=True)
-        st.write(f"Image size: {image.size}")
-    
-    with col2:
-        with st.spinner("Analyzing image for oil spills..."):
-            # Convert to numpy array
+    try:
+        # Open image
+        image = Image.open(uploaded_file)
+        
+        # Display original image
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.image(image, caption="Original Image", use_container_width=True)
+            st.write(f"Image size: {image.size}")
+            st.write(f"Mode: {image.mode}")
+        
+        with col2:
+            # Convert to numpy array for analysis
             img_array = np.array(image)
             
-            # Detect spills
-            detector = st.session_state.detector
+            # Simple analysis - detect dark areas
+            st.subheader("Basic Analysis")
             
-            if detection_method == "Color + Texture":
-                mask = detector.detect_spills(image)
-            elif detection_method == "Color-Based":
-                hsv = cv2.cvtColor(cv2.resize(img_array, (256, 256)), cv2.COLOR_RGB2HSV)
-                lower_dark = np.array([0, 0, 0])
-                upper_dark = np.array([180, 255, 100 + sensitivity * 10])
-                mask = cv2.inRange(hsv, lower_dark, upper_dark)
-            else:  # Texture-Based
-                gray = cv2.cvtColor(cv2.resize(img_array, (256, 256)), cv2.COLOR_RGB2GRAY)
-                kernel = np.ones((15, 15), np.float32) / 225
-                smoothed = cv2.filter2D(gray, -1, kernel)
-                variance = cv2.filter2D(gray**2, -1, kernel) - smoothed**2
-                mask = (variance < 50 + sensitivity * 20).astype(np.uint8) * 255
+            # Calculate basic statistics
+            avg_brightness = np.mean(img_array)
+            min_brightness = np.min(img_array)
+            max_brightness = np.max(img_array)
             
-            # Filter small areas
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            filtered_mask = np.zeros_like(mask)
-            for contour in contours:
-                if cv2.contourArea(contour) > min_spill_size:
-                    cv2.drawContours(filtered_mask, [contour], -1, 255, -1)
+            st.write(f"Average brightness: {avg_brightness:.1f}")
+            st.write(f"Min brightness: {min_brightness}")
+            st.write(f"Max brightness: {max_brightness}")
             
-            # Create visualization
-            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+            # Simple dark area detection
+            dark_threshold = st.slider("Dark area threshold", 0, 255, 100)
+            dark_pixels = np.sum(img_array < dark_threshold) / img_array.size * 100
             
-            # Original image
-            ax1.imshow(image)
-            ax1.set_title("Original Image")
-            ax1.axis("off")
+            st.write(f"Dark pixels (< {dark_threshold}): {dark_pixels:.1f}%")
             
-            # Detection mask
-            ax2.imshow(filtered_mask, cmap="hot")
-            ax2.set_title("Detection Mask")
-            ax2.axis("off")
+            if dark_pixels > 10:
+                st.warning("⚠️ Significant dark areas detected - potential spill indicators")
+            else:
+                st.success("✅ Normal brightness levels detected")
             
-            # Overlay
-            overlay = cv2.resize(img_array, (256, 256))
-            ax3.imshow(overlay)
-            ax3.imshow(filtered_mask, cmap="Reds", alpha=0.5)
-            ax3.set_title("Overlay (Red = Potential Spill)")
-            ax3.axis("off")
+            # Create a simple visualization
+            try:
+                import matplotlib.pyplot as plt
+                
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+                
+                # Original image
+                ax1.imshow(img_array)
+                ax1.set_title("Original Image")
+                ax1.axis('off')
+                
+                # Brightness histogram
+                brightness = np.mean(img_array, axis=2).flatten()
+                ax2.hist(brightness, bins=50, alpha=0.7, color='blue')
+                ax2.axvline(dark_threshold, color='red', linestyle='--', label=f'Threshold: {dark_threshold}')
+                ax2.set_title("Brightness Distribution")
+                ax2.set_xlabel("Brightness")
+                ax2.set_ylabel("Pixel Count")
+                ax2.legend()
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+                
+            except ImportError:
+                st.info("Matplotlib not available for advanced visualization")
+        
+        # Additional analysis
+        st.subheader("Color Channel Analysis")
+        
+        if len(img_array.shape) == 3:  # Color image
+            red_channel = img_array[:, :, 0]
+            green_channel = img_array[:, :, 1]
+            blue_channel = img_array[:, :, 2]
             
-            plt.tight_layout()
-            st.pyplot(fig)
-    
-    # Statistics
-    spill_area = np.sum(filtered_mask > 0) / (filtered_mask.shape[0] * filtered_mask.shape[1]) * 100
-    num_spills = len(contours)
-    
-    st.subheader("📊 Detection Results")
-    
-    col3, col4, col5 = st.columns(3)
-    
-    with col3:
-        st.metric("Spill Area Percentage", f"{spill_area:.2f}%")
-    
-    with col4:
-        st.metric("Number of Detected Areas", num_spills)
-    
-    with col5:
-        status = "🟢 No Significant Spills" if spill_area < 1.0 else "🔴 Potential Spills Detected"
-        st.metric("Status", status)
-    
-    # Download results
-    if spill_area > 0:
-        mask_img = Image.fromarray(filtered_mask)
-        buf = io.BytesIO()
-        mask_img.save(buf, format="PNG")
-        byte_im = buf.getvalue()
+            col3, col4, col5 = st.columns(3)
+            
+            with col3:
+                st.metric("Red Channel Avg", f"{np.mean(red_channel):.1f}")
+            with col4:
+                st.metric("Green Channel Avg", f"{np.mean(green_channel):.1f}")
+            with col5:
+                st.metric("Blue Channel Avg", f"{np.mean(blue_channel):.1f}")
+        
+        # Download analysis report
+        report = f"""
+        Oil Spill Analysis Report
+        =========================
+        
+        Image Analysis:
+        - Size: {image.size}
+        - Dark pixels (< {dark_threshold}): {dark_pixels:.1f}%
+        - Average brightness: {avg_brightness:.1f}
+        
+        Assessment:
+        - {'Potential spill indicators detected' if dark_pixels > 10 else 'Normal conditions'}
+        """
         
         st.download_button(
-            label="💾 Download Detection Mask",
-            data=byte_im,
-            file_name="oil_spill_detection.png",
-            mime="image/png",
-            use_container_width=True
+            label="📄 Download Analysis Report",
+            data=report,
+            file_name="oil_spill_analysis.txt",
+            mime="text/plain"
         )
+        
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
+        st.info("This is a basic version. For advanced detection, ensure all dependencies are installed.")
 
 else:
-    st.info("👆 Please upload a satellite image to get started.")
-    st.markdown("""
-    ### Sample images to test:
-    - Dark, smooth areas in water bodies
-    - Satellite images of oceans, seas, or large lakes
-    - Images with potential oil spill patterns
-    """)
+    st.info("👆 Please upload an image to begin analysis")
+    
+    # Sample usage instructions
+    with st.expander("ℹ️ How to use this app"):
+        st.markdown("""
+        1. **Upload a satellite image** of a water body
+        2. **Adjust the dark area threshold** to detect potential spills
+        3. **Review the analysis results**
+        4. **Download the report** if needed
+        
+        **What to look for:**
+        - High percentage of dark pixels in water areas
+        - Unusual dark patterns in otherwise bright water
+        - Contrast between normal water and potential spill areas
+        """)
 
 # Footer
 st.markdown("---")
-st.markdown("### How it works:")
-st.markdown("""
-This application uses computer vision techniques to detect potential oil spills:
-
-1. **Color Analysis**: Detects dark areas typical of oil spills
-2. **Texture Analysis**: Identifies smooth surface patterns
-3. **Morphological Operations**: Cleans up detection results
-4. **Size Filtering**: Removes small false positives
-
-**Note**: This is a demonstration using traditional computer vision. For production use, consider training a dedicated ML model.
-""")
+st.markdown("*Note: This is a basic demonstration app. For production use, consider more advanced computer vision techniques.*")
