@@ -1,9 +1,8 @@
 import streamlit as st
 import torch
 import torch.nn as nn
-import torchvision.transforms as T
-from PIL import Image
 import numpy as np
+from PIL import Image
 import matplotlib.pyplot as plt
 import requests
 import os
@@ -83,6 +82,7 @@ def download_model():
             with open(MODEL_PATH, "wb") as f:
                 f.write(r.content)
             st.success("✅ Model downloaded successfully!")
+            return True
         except Exception as e:
             st.error(f"❌ Error downloading model: {e}")
             return False
@@ -104,7 +104,7 @@ def load_model():
         # Load with map_location to handle CPU/GPU compatibility
         state_dict = torch.load(MODEL_PATH, map_location=torch.device(device))
         
-        # Handle state dict format (it might be nested under 'model' key)
+        # Handle state dict format
         if 'model' in state_dict:
             state_dict = state_dict['model']
         
@@ -118,14 +118,20 @@ def load_model():
         return None, device
 
 # -----------------------------
-# Preprocessing
+# Simple preprocessing without torchvision
 # -----------------------------
-transform = T.Compose([
-    T.Resize((256, 256)),
-    T.ToTensor(),
-    T.Normalize(mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225])
-])
+def preprocess_image(image):
+    # Resize
+    image = image.resize((256, 256))
+    # Convert to numpy array
+    img_array = np.array(image).astype(np.float32) / 255.0
+    # Normalize (ImageNet stats)
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+    img_array = (img_array - mean) / std
+    # Convert to tensor and add batch dimension
+    img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)
+    return img_tensor
 
 # -----------------------------
 # Streamlit UI
@@ -138,31 +144,6 @@ st.set_page_config(
 
 st.title("🌊 Oil Spill Segmentation (UNet)")
 st.write("Upload a satellite image to detect possible oil spills using UNet architecture.")
-
-# Sidebar with info
-with st.sidebar:
-    st.header("About")
-    st.write("This app uses a custom UNet model to detect oil spills in satellite imagery.")
-    st.write("**Instructions:**")
-    st.write("1. Upload a satellite image (JPG, JPEG, PNG)")
-    st.write("2. The UNet model will process the image")
-    st.write("3. View the segmentation results")
-    st.write("4. Download the mask if needed")
-    
-    st.header("Model Info")
-    st.write(f"Framework: PyTorch {torch.__version__}")
-    st.write("Architecture: Custom UNet")
-    st.write("Input size: 256x256 pixels")
-    
-    # Confidence threshold slider
-    confidence_threshold = st.slider(
-        "Confidence Threshold",
-        min_value=0.1,
-        max_value=0.9,
-        value=0.5,
-        step=0.1,
-        help="Adjust the sensitivity of spill detection"
-    )
 
 # Initialize model
 if 'model_loaded' not in st.session_state:
@@ -190,7 +171,7 @@ if uploaded_file is not None:
         st.error("❌ Model failed to load. Please check the console for errors.")
     else:
         # Preprocess
-        input_tensor = transform(image).unsqueeze(0).to(device)
+        input_tensor = preprocess_image(image).to(device)
 
         # Inference
         with torch.no_grad():
@@ -198,13 +179,9 @@ if uploaded_file is not None:
             pred = torch.sigmoid(output).squeeze().cpu().numpy()
 
         # Apply threshold
+        confidence_threshold = st.slider("Confidence Threshold", 0.1, 0.9, 0.5, 0.1)
         mask = (pred > confidence_threshold).astype(np.uint8) * 255
 
-        # Create overlay
-        overlay = np.array(image.resize((256, 256)))
-        mask_resized = Image.fromarray(mask).resize((overlay.shape[1], overlay.shape[0]))
-        mask_array = np.array(mask_resized)
-        
         # Create visualization
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
         
@@ -219,8 +196,9 @@ if uploaded_file is not None:
         ax2.axis("off")
         
         # Overlay
+        overlay = np.array(image.resize((256, 256)))
         ax3.imshow(overlay)
-        ax3.imshow(mask_array, cmap="Reds", alpha=0.5)
+        ax3.imshow(mask, cmap="Reds", alpha=0.5)
         ax3.set_title("Overlay (Red = Oil Spill)")
         ax3.axis("off")
         
@@ -231,20 +209,10 @@ if uploaded_file is not None:
         
         # Statistics
         spill_area = np.sum(mask > 0) / (mask.shape[0] * mask.shape[1]) * 100
-        max_confidence = np.max(pred) * 100
         
         st.subheader("📊 Detection Statistics")
-        col3, col4, col5 = st.columns(3)
-        
-        with col3:
-            st.metric("Spill Area Percentage", f"{spill_area:.2f}%")
-        
-        with col4:
-            st.metric("Max Confidence", f"{max_confidence:.2f}%")
-        
-        with col5:
-            status = "🟢 No Spill" if spill_area < 1.0 else "🔴 Spill Detected"
-            st.metric("Status", status)
+        st.write(f"Spill Area: {spill_area:.2f}%")
+        st.write(f"Threshold: {confidence_threshold}")
         
         # Download Mask Button
         mask_img = Image.fromarray(mask.astype(np.uint8))
@@ -256,19 +224,5 @@ if uploaded_file is not None:
             label="💾 Download Predicted Mask",
             data=byte_im,
             file_name="oil_spill_mask.png",
-            mime="image/png",
-            use_container_width=True
+            mime="image/png"
         )
-
-else:
-    st.info("👆 Please upload a satellite image to get started.")
-
-# Footer
-st.markdown("---")
-st.markdown("### How it works:")
-st.markdown("""
-- **UNet Architecture**: The model uses an encoder-decoder structure with skip connections
-- **Segmentation**: Predicts pixel-wise probabilities for oil spill presence
-- **Post-processing**: Applies threshold to create binary mask
-- **Visualization**: Overlays detection results on original image
-""")
