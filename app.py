@@ -35,26 +35,39 @@ transform = transforms.Compose([
 # Prediction Function
 # -------------------
 def predict(image: Image.Image):
-    # Preprocess
     img_tensor = transform(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
         output = model(img_tensor)
-        # assume output is (B,1,H,W) with sigmoid activation required
-        if output.shape[1] == 1:
+        if output.shape[1] == 1:  # binary segmentation
             output = torch.sigmoid(output)
             mask = (output > 0.5).float()
-        else:
+        else:  # multi-class segmentation
             mask = torch.argmax(output, dim=1).unsqueeze(1)
 
-    mask = mask.squeeze().cpu().numpy().astype(np.uint8) * 255
-    mask_img = Image.fromarray(mask)
-    return mask_img
+    mask = mask.squeeze().cpu().numpy().astype(np.uint8)
+    return mask
+
+# -------------------
+# Overlay Function
+# -------------------
+def create_overlay(original: Image.Image, mask: np.ndarray):
+    # Resize original image to match mask
+    original_resized = original.resize((mask.shape[1], mask.shape[0]))
+    original_np = np.array(original_resized)
+
+    # Create a red mask where oil spill = 1
+    color_mask = np.zeros_like(original_np)
+    color_mask[mask == 1] = [255, 0, 0]  # Red for oil spill
+
+    # Overlay with transparency
+    overlay = cv2.addWeighted(original_np, 0.7, color_mask, 0.3, 0)
+    return overlay
 
 # -------------------
 # Streamlit UI
 # -------------------
-st.title("🌊 AI SpillGuard - Oil Spill Segmentation")
+st.title("🌊 AI SpillGuard - Oil Spill Segmentation with Overlay")
 
 uploaded_file = st.file_uploader("Upload a satellite image", type=["jpg", "png", "jpeg", "tif"])
 
@@ -65,15 +78,10 @@ if uploaded_file is not None:
 
     # Run prediction
     mask = predict(image)
-    st.image(mask, caption="Predicted Oil Spill Mask", use_container_width=True)
 
-    # Overlay
-    image_resized = image.resize(mask.size)
-    overlay = cv2.addWeighted(
-        np.array(image_resized),
-        0.7,
-        cv2.cvtColor(np.array(mask), cv2.COLOR_GRAY2RGB),
-        0.3,
-        0
-    )
-    st.image(overlay, caption="Overlay Result", use_container_width=True)
+    # Show raw mask
+    st.image(mask * 255, caption="Predicted Oil Spill Mask", use_container_width=True)
+
+    # Show overlay
+    overlay = create_overlay(image, mask)
+    st.image(overlay, caption="Overlay Result (Oil Spill in Red)", use_container_width=True)
