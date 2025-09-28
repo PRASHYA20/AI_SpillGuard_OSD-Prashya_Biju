@@ -1,196 +1,229 @@
-import streamlit as st
-import torch
-import segmentation_models_pytorch as smp
-from PIL import Image
+# app.py
+from flask import Flask, render_template, request, jsonify, send_file
 import numpy as np
-import io
-import requests
+import cv2
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 import os
+from werkzeug.utils import secure_filename
+import io
+from PIL import Image
+import base64
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Use non-GUI backend
 
-# -----------------------------
-# Model Configuration
-# -----------------------------
-MODEL_PATH = "oil_spill_model_deploy.pth"
-DROPBOX_URL = "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&dl=1"
+app = Flask(__name__)
 
-# -----------------------------
-# Create UNet Model
-# -----------------------------
-def create_unet_model():
-    model = smp.Unet(
-        encoder_name="resnet34",
-        encoder_weights=None,
-        in_channels=3,
-        classes=1,
-        activation=None,
-    )
-    return model
+# Configuration
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'tiff'}
 
-# -----------------------------
-# Download Model
-# -----------------------------
-def download_model():
-    if not os.path.exists(MODEL_PATH):
-        st.info("🔽 Downloading model from Dropbox...")
-        try:
-            response = requests.get(DROPBOX_URL, stream=True, timeout=60)
-            response.raise_for_status()
-            total_size = int(response.headers.get('content-length', 0))
-            progress_bar = st.progress(0)
-            downloaded = 0
-            with open(MODEL_PATH, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            progress = downloaded / total_size
-                            progress_bar.progress(progress)
-            progress_bar.empty()
-            st.success("✅ Model downloaded!")
-            return True
-        except Exception as e:
-            st.error(f"❌ Error downloading model: {e}")
-            return False
-    return True
+# Create upload directory if it doesn't exist
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# -----------------------------
-# Load Model
-# -----------------------------
-@st.cache_resource
-def load_model():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    st.write(f"🖥️ Using device: {device}")
-
-    if not download_model():
-        return None, device
-
+# Load pre-trained model (you'll need to train or obtain this model)
+# For demonstration, we'll create a placeholder function
+def load_oil_spill_model():
+    """
+    Load the oil spill detection model.
+    In practice, you would load a pre-trained TensorFlow/Keras model.
+    """
     try:
-        model = create_unet_model()
-        checkpoint = torch.load(MODEL_PATH, map_location=device)
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-
-        # Remove DataParallel prefix if exists
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            if k.startswith("module."):
-                new_state_dict[k[7:]] = v
-            else:
-                new_state_dict[k] = v
-
-        model.load_state_dict(new_state_dict)
-        model.to(device)
-        model.eval()
-        st.success("✅ Model loaded successfully!")
-        return model, device
-
+        # Replace with your actual model path
+        # model = load_model('oil_spill_model.h5')
+        # return model
+        return None
     except Exception as e:
-        st.error(f"❌ Error loading model: {e}")
-        return None, device
-
-# -----------------------------
-# Preprocess Image
-# -----------------------------
-def preprocess_image(image):
-    image_resized = image.resize((256, 256))
-    img_array = np.array(image_resized).astype(np.float32) / 255.0
-
-    # ImageNet normalization
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    img_array = (img_array - mean) / std
-
-    # Float32 tensor
-    img_tensor = torch.from_numpy(img_array).permute(2,0,1).unsqueeze(0).float()
-    return img_tensor, image_resized
-
-# -----------------------------
-# Streamlit App - EXACT SAME FORMAT
-# -----------------------------
-st.set_page_config(page_title="Oil Spill Detection", page_icon="🌊", layout="wide")
-st.title("🌊 Oil Spill Segmentation with UNet (ResNet34)")
-st.write("Upload a satellite image to detect oil spills.")
-
-with st.sidebar:
-    st.header("⚙️ Settings")
-    confidence_threshold = st.slider("Confidence Threshold", 0.1, 0.9, 0.5, 0.1)
-    st.header("ℹ️ About")
-    st.write("This app uses a UNet model (ResNet34 backbone) for oil spill segmentation.")
+        print(f"Error loading model: {e}")
+        return None
 
 # Initialize model
-if 'model' not in st.session_state:
-    with st.spinner("🔄 Loading model..."):
-        model, device = load_model()
-        st.session_state.model = model
-        st.session_state.device = device
+model = load_oil_spill_model()
 
-# Upload image
-uploaded_file = st.file_uploader("📤 Upload Satellite Image", type=["jpg", "jpeg", "png"])
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
+def preprocess_image(image_path):
+    """Preprocess the uploaded image for prediction"""
+    # Read image
+    img = cv2.imread(image_path)
+    if img is None:
+        raise ValueError("Could not read image")
     
-    # Display Original Image at the top
-    st.subheader("Original Image")
-    st.image(image, use_column_width=True)
+    # Resize to expected input size (adjust based on your model)
+    img = cv2.resize(img, (256, 256))
+    
+    # Normalize pixel values
+    img = img.astype('float32') / 255.0
+    
+    # Add batch dimension
+    img = np.expand_dims(img, axis=0)
+    
+    return img
 
-    if st.session_state.model is None:
-        st.error("❌ Model failed to load. Please check weights.")
-    else:
-        with st.spinner("🔄 Predicting..."):
-            input_tensor, processed_image = preprocess_image(image)
-            input_tensor = input_tensor.to(st.session_state.device, dtype=torch.float32)
+def detect_oil_spill_areas(image_path):
+    """
+    Detect oil spill areas in the image.
+    This is a simplified version - in practice, you'd use your trained model.
+    """
+    # Read and preprocess image
+    img = cv2.imread(image_path)
+    original_shape = img.shape
+    
+    # Resize for processing
+    img_resized = cv2.resize(img, (256, 256))
+    
+    # Convert to HSV color space for better color-based segmentation
+    hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
+    
+    # Define color ranges for oil spill detection (these are approximate)
+    # Oil spills often appear as dark, smooth areas
+    lower_dark = np.array([0, 0, 0])
+    upper_dark = np.array([180, 255, 100])
+    
+    # Create mask for dark areas
+    mask = cv2.inRange(hsv, lower_dark, upper_dark)
+    
+    # Apply morphological operations to clean up the mask
+    kernel = np.ones((5,5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    
+    # Find contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filter contours by area
+    min_area = 100  # Minimum area threshold
+    oil_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+    
+    # Create result image with detected areas
+    result_img = img_resized.copy()
+    cv2.drawContours(result_img, oil_contours, -1, (0, 0, 255), 2)  # Red contours
+    
+    # Calculate total oil spill area percentage
+    total_pixels = mask.shape[0] * mask.shape[1]
+    oil_pixels = np.sum(mask > 0)
+    oil_percentage = (oil_pixels / total_pixels) * 100
+    
+    return result_img, oil_percentage, len(oil_contours)
 
-            with torch.no_grad():
-                output = st.session_state.model(input_tensor)
-                prediction = torch.sigmoid(output).squeeze().cpu().numpy()
+def create_visualization(original_img, result_img, oil_percentage, contour_count):
+    """Create a side-by-side visualization"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
+    
+    # Original image
+    ax1.imshow(cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB))
+    ax1.set_title('Original Image')
+    ax1.axis('off')
+    
+    # Result image
+    ax2.imshow(cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB))
+    ax2.set_title(f'Detected Oil Spills\n({oil_percentage:.2f}% area, {contour_count} regions)')
+    ax2.axis('off')
+    
+    # Save to buffer
+    buf = io.BytesIO()
+    plt.tight_layout()
+    plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    plt.close()
+    buf.seek(0)
+    
+    return buf
 
-            # Binary mask
-            binary_mask = (prediction > confidence_threshold).astype(np.uint8) * 255
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-            # Create two columns for side-by-side display
-            col1, col2 = st.columns(2)
+@app.route('/predict', methods=['POST'])
+def predict():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    if file and allowed_file(file.filename):
+        try:
+            # Save uploaded file
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
             
-            with col1:
-                st.subheader("Processed Image")
-                st.image(processed_image, use_column_width=True)
+            # Detect oil spill areas
+            original_img = cv2.imread(filepath)
+            original_img_resized = cv2.resize(original_img, (256, 256))
+            result_img, oil_percentage, contour_count = detect_oil_spill_areas(filepath)
             
-            with col2:
-                st.subheader("Oil Spill Overlay")
-                # Overlay mask on original - RED for oil spill
-                overlay = processed_image.copy()
-                overlay_np = np.array(overlay)
-                overlay_np[binary_mask > 0] = [255, 0, 0]  # red for oil spill
-                overlay_img = Image.fromarray(overlay_np)
-                st.image(overlay_img, use_column_width=True)
-
-            # Metrics - EXACT SAME as your working version
-            spill_area = np.sum(binary_mask > 0) / (binary_mask.shape[0] * binary_mask.shape[1]) * 100
-            max_conf = np.max(prediction) * 100
-
-            st.subheader("📊 Detection Results")
+            # Create visualization
+            viz_buffer = create_visualization(original_img_resized, result_img, oil_percentage, contour_count)
             
-            # Create metrics in columns
-            col3, col4, col5 = st.columns(3)
+            # Convert visualization to base64 for display
+            viz_base64 = base64.b64encode(viz_buffer.getvalue()).decode('utf-8')
             
-            with col3:
-                st.metric("Spill Area", f"{spill_area:.2f}%")
-            with col4:
-                st.metric("Max Confidence", f"{max_conf:.1f}%")
-            with col5:
-                status = "🔴 Spill Detected" if spill_area > 1.0 else "🟢 No Spill"
-                st.metric("Status", status)
+            # Clean up uploaded file
+            os.remove(filepath)
+            
+            return jsonify({
+                'success': True,
+                'oil_percentage': round(oil_percentage, 2),
+                'contour_count': contour_count,
+                'visualization': f'data:image/png;base64,{viz_base64}',
+                'message': f'Detected {oil_percentage:.2f}% potential oil spill area across {contour_count} regions'
+            })
+            
+        except Exception as e:
+            return jsonify({'error': f'Processing error: {str(e)}'}), 500
+    
+    return jsonify({'error': 'Invalid file type'}), 400
 
-            # Download mask - EXACT SAME as your working version
-            mask_image = Image.fromarray(binary_mask)
-            buf = io.BytesIO()
-            mask_image.save(buf, format="PNG")
-            st.download_button(
-                label="💾 Download Prediction Mask",
-                data=buf.getvalue(),
-                file_name="oil_spill_mask.png",
-                mime="image/png"
-            )
+@app.route('/batch_predict', methods=['POST'])
+def batch_predict():
+    """Handle multiple file uploads"""
+    if 'files' not in request.files:
+        return jsonify({'error': 'No files uploaded'}), 400
+    
+    files = request.files.getlist('files')
+    results = []
+    
+    for file in files:
+        if file and allowed_file(file.filename):
+            try:
+                # Save uploaded file
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(filepath)
+                
+                # Detect oil spill areas
+                _, oil_percentage, contour_count = detect_oil_spill_areas(filepath)
+                
+                results.append({
+                    'filename': filename,
+                    'oil_percentage': round(oil_percentage, 2),
+                    'contour_count': contour_count,
+                    'status': 'High risk' if oil_percentage > 5 else 'Low risk'
+                })
+                
+                # Clean up
+                os.remove(filepath)
+                
+            except Exception as e:
+                results.append({
+                    'filename': filename,
+                    'error': str(e),
+                    'status': 'Error'
+                })
+    
+    return jsonify({'results': results})
 
-else:
-    st.info("👆 Please upload a satellite image to begin detection.")
+@app.route('/api/predict', methods=['POST'])
+def api_predict():
+    """API endpoint for programmatic access"""
+    return predict()
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
