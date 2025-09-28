@@ -59,7 +59,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Define the model architecture (same as your Flask app)
+# Define the model architecture
 class OilSpillModel(nn.Module):
     def __init__(self, num_classes=1):
         super(OilSpillModel, self).__init__()
@@ -94,75 +94,102 @@ class OilSpillModel(nn.Module):
 
 @st.cache_resource
 def download_model_from_dropbox():
-    """Download the model from Dropbox"""
-    dropbox_url = "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&st=l1zhnigc&dl=1"
+    """Download the model from Dropbox with proper error handling"""
+    # Try different Dropbox URL formats
+    dropbox_urls = [
+        "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&dl=1",
+        "https://dl.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&st=l1zhnigc&dl=1",
+        "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&raw=1"
+    ]
     
-    try:
-        st.info("📥 Downloading model from Dropbox...")
-        response = requests.get(dropbox_url, stream=True)
-        response.raise_for_status()
-        
-        model_path = "oil_spill_model_deploy.pth"
-        with open(model_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        st.success("✅ Model downloaded successfully!")
-        return model_path
-        
-    except Exception as e:
-        st.error(f"❌ Error downloading model: {e}")
-        return None
+    for i, dropbox_url in enumerate(dropbox_urls):
+        try:
+            st.info(f"📥 Attempting to download model (Attempt {i+1}/3)...")
+            
+            # Use a session with headers to mimic browser
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            })
+            
+            response = session.get(dropbox_url, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            # Check if we got a valid file (not HTML error page)
+            if len(response.content) < 1000 or b"html" in response.content[:1000].lower():
+                st.warning(f"⚠️ Attempt {i+1} failed: Got HTML instead of model file")
+                continue
+            
+            model_path = "oil_spill_model_deploy.pth"
+            with open(model_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            # Verify file was downloaded properly
+            if os.path.exists(model_path) and os.path.getsize(model_path) > 1000:
+                st.success(f"✅ Model downloaded successfully! (Size: {os.path.getsize(model_path)} bytes)")
+                return model_path
+            else:
+                st.warning(f"⚠️ Attempt {i+1} failed: File too small or corrupted")
+                
+        except Exception as e:
+            st.warning(f"⚠️ Attempt {i+1} failed: {str(e)}")
+            continue
+    
+    st.error("❌ All download attempts failed. Using computer vision only.")
+    return None
 
 @st.cache_resource
 def load_oil_spill_model():
-    """Load the PyTorch model"""
+    """Load the PyTorch model with fallback"""
     try:
-        # Download model if not exists
-        model_path = "oil_spill_model_deploy.pth"
-        if not os.path.exists(model_path):
-            model_path = download_model_from_dropbox()
-            if not model_path:
-                raise Exception("Failed to download model")
+        # Try to download model
+        model_path = download_model_from_dropbox()
         
-        # Initialize model
-        model = OilSpillModel(num_classes=1)
-        
-        # Load state dict
-        checkpoint = torch.load(model_path, map_location='cpu')
-        
-        # Handle different checkpoint formats
-        if isinstance(checkpoint, dict):
-            if 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'])
-            elif 'state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['state_dict'])
+        if model_path and os.path.exists(model_path):
+            # Initialize model
+            model = OilSpillModel(num_classes=1)
+            
+            # Load state dict
+            checkpoint = torch.load(model_path, map_location='cpu')
+            
+            # Handle different checkpoint formats
+            if isinstance(checkpoint, dict):
+                if 'model_state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                elif 'state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['state_dict'])
+                else:
+                    model.load_state_dict(checkpoint)
             else:
                 model.load_state_dict(checkpoint)
+            
+            model.eval()
+            st.success("✅ PyTorch model loaded successfully!")
+            return model
         else:
-            model.load_state_dict(checkpoint)
-        
-        model.eval()
-        st.success("✅ PyTorch model loaded successfully!")
-        return model
-        
+            st.warning("⚠️ No model file available. Using computer vision only.")
+            return None
+            
     except Exception as e:
-        st.warning(f"⚠️ Using computer vision techniques: {e}")
+        st.warning(f"⚠️ Model loading failed: {str(e)}. Using computer vision only.")
         return None
 
 def load_and_preprocess_image(image):
     """Load and preprocess image"""
-    img_array = np.array(image)
-    if len(img_array.shape) == 3:
-        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    if isinstance(image, str):
+        # If it's a file path
+        img = Image.open(image).convert('RGB')
     else:
-        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
+        # If it's an uploaded file
+        img = Image.open(image).convert('RGB')
+    
+    img_array = np.array(img)
+    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
     return img_bgr, img_array
 
 def identify_water_regions(hsv, lab, gray):
     """Identify water regions while excluding land and other non-water areas"""
-    height, width = gray.shape
-    
     # Water typically has blue-green hues in HSV
     water_low1 = np.array([90, 40, 40])
     water_high1 = np.array([130, 255, 200])
@@ -209,15 +236,20 @@ def calculate_texture_variance(gray):
 
 def detect_oil_spills_accurate(image):
     """
-    Accurate oil spill detection focusing on real oil spill characteristics
+    Accurate oil spill detection using computer vision
     """
     img_bgr, img_rgb = load_and_preprocess_image(image)
     original_img = img_bgr.copy()
     
+    # Resize for consistent processing
+    target_size = (512, 512)
+    img_resized = cv2.resize(img_bgr, target_size)
+    original_img_resized = cv2.resize(original_img, target_size)
+    
     # Convert to different color spaces
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(img_resized, cv2.COLOR_BGR2LAB)
+    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
     # Step 1: Identify water regions
     water_mask = identify_water_regions(hsv, lab, gray)
@@ -273,7 +305,7 @@ def detect_oil_spills_accurate(image):
             cv2.drawContours(validated_mask, [contour], 0, 0, -1)
     
     # Create result visualization
-    result_img = original_img.copy()
+    result_img = original_img_resized.copy()
     
     # Water in blue (semi-transparent)
     water_overlay = result_img.copy()
@@ -298,18 +330,24 @@ def detect_oil_spills_accurate(image):
     
     contour_count = len([c for c in contours if cv2.contourArea(c) > 50])
     
-    return result_img, oil_percentage, contour_count, validated_mask, img_rgb, oil_properties, water_mask
+    return result_img, oil_percentage, contour_count, validated_mask, cv2.cvtColor(original_img_resized, cv2.COLOR_BGR2RGB), oil_properties, water_mask
 
 def main():
     st.markdown('<h1 class="main-header">🌊 Oil Spill Detection System</h1>', unsafe_allow_html=True)
     
-    # Initialize model (this will download automatically)
-    model = load_oil_spill_model()
+    # Show app status
+    with st.sidebar:
+        st.title("App Status")
+        if st.button("Check Model Status"):
+            model = load_oil_spill_model()
+            if model:
+                st.success("✅ AI Model Ready")
+            else:
+                st.info("🔍 Using Computer Vision")
     
-    st.sidebar.title("Settings")
-    use_ai_model = st.sidebar.checkbox("Use AI Model", value=(model is not None))
+    st.info("💡 **Tip**: Upload satellite images of ocean areas for best results")
     
-    uploaded_file = st.file_uploader("Upload Satellite Image", type=['png', 'jpg', 'jpeg', 'tiff'])
+    uploaded_file = st.file_uploader("Choose a satellite image", type=['png', 'jpg', 'jpeg', 'tiff'])
     
     if uploaded_file is not None:
         col1, col2 = st.columns(2)
@@ -322,8 +360,8 @@ def main():
         if st.button("🔍 Analyze for Oil Spills", type="primary"):
             with st.spinner("Analyzing image for oil spills..."):
                 try:
-                    # Use your detection functions
-                    result_img, oil_percentage, contour_count, oil_mask, original_img, oil_properties, water_mask = detect_oil_spills_accurate(image)
+                    # Use detection functions
+                    result_img, oil_percentage, contour_count, oil_mask, original_img, oil_properties, water_mask = detect_oil_spills_accurate(uploaded_file)
                     
                     # Display results
                     with col2:
@@ -359,22 +397,21 @@ def main():
                     
                     # Detailed analysis
                     with st.expander("📋 Detailed Analysis Report"):
-                        st.write(f"**Image Analysis Complete**")
+                        st.write(f"**Detection Method**: Advanced Computer Vision")
                         st.write(f"- **Total Water Area**: {np.sum(water_mask > 0):,} pixels")
                         st.write(f"- **Oil Spill Area**: {np.sum(oil_mask > 0):,} pixels")
                         st.write(f"- **Oil Coverage**: {oil_percentage:.4f}% of water area")
-                        st.write(f"- **Detection Method**: {'AI Model + Computer Vision' if use_ai_model else 'Computer Vision'}")
                         
                         if oil_percentage > 1.0:
-                            st.error("🚨 Immediate attention required! Significant oil spill detected.")
+                            st.error("🚨 **HIGH RISK**: Significant oil spill detected! Immediate attention required.")
                         elif oil_percentage > 0.1:
-                            st.warning("⚠️ Potential oil contamination detected. Monitor closely.")
+                            st.warning("⚠️ **MEDIUM RISK**: Potential oil contamination detected. Monitor closely.")
                         else:
-                            st.success("✅ No significant oil spills detected.")
+                            st.success("✅ **LOW RISK**: No significant oil spills detected.")
                 
                 except Exception as e:
-                    st.error(f"Error processing image: {str(e)}")
-                    st.info("Please try with a different image or check the image format.")
+                    st.error(f"❌ Error processing image: {str(e)}")
+                    st.info("💡 Try with a different image or check if it's a valid satellite image.")
 
 if __name__ == "__main__":
     main()
