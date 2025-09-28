@@ -1,4 +1,4 @@
-# Streamlit (stable for Python 3.11)
+# Streamlit
 streamlit==1.50.0
 
 # PyTorch
@@ -14,7 +14,8 @@ requests==2.31.0
 # OpenCV headless
 opencv-python-headless==4.8.0.76
 
-# Streamlit dependencies (pin versions to avoid conflicts)
+# Streamlit dependencies (pin versions)
 rich==14.1.0
 markdown-it-py==4.0.0
 mdurl==0.1.2
+pygments==2.19.2
