@@ -4,6 +4,6 @@ torchvision==0.17.2
 segmentation-models-pytorch==0.3.3
 pillow
 matplotlib
-opencv-python-headless
+opencv-python-headless==4.10.0.84
 requests
 numpy
