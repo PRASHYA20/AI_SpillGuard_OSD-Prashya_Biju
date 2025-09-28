@@ -1,21 +1,9 @@
-# Streamlit
-streamlit==1.50.0
-
-# PyTorch CPU
-torch==2.0.1+cpu
-torchvision==0.15.2+cpu
-
-# Image and array handling
-Pillow==10.0.0
+streamlit==1.29.0
+torch==2.1.0+cpu
+torchvision==0.16.1+cpu
+segmentation-models-pytorch==0.3.2
 numpy==1.26.0
-matplotlib==3.7.0
+Pillow==10.1.0
+matplotlib==3.8.0
+opencv-python-headless==4.8.1.78
 requests==2.31.0
-
-# OpenCV headless
-opencv-python-headless==4.8.0.76
-
-# Streamlit dependencies (pin versions)
-rich==14.1.0
-markdown-it-py==4.0.0
-mdurl==0.1.2
-pygments==2.19.2
