@@ -1,10 +1,9 @@
 # Streamlit
 streamlit==1.50.0
 
-# PyTorch CPU (official wheel index for CPU)
--f https://download.pytorch.org/whl/torch_stable.html
-torch==2.0.1+cpu
-torchvision==0.15.2+cpu
+# PyTorch (CPU-compatible for Python 3.11)
+torch==2.8.0
+torchvision==0.15.2
 
 # Image and array handling
 Pillow==10.0.0
@@ -12,5 +11,5 @@ numpy==1.26.0
 matplotlib==3.7.0
 requests==2.31.0
 
-# OpenCV headless for servers
+# OpenCV headless
 opencv-python-headless==4.8.0.76
