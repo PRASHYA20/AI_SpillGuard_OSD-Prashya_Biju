@@ -1,10 +1,13 @@
-streamlit==1.29.0
-torch==2.1.1
-torchvision==0.16.1
-segmentation-models-pytorch==0.3.2
-timm==0.6.12
-numpy==1.26.0
-Pillow==10.1.0
-opencv-python-headless==4.8.1.78
-requests==2.31.0
-matplotlib==3.8.0
+import os
+os.environ['TIMM_DISABLE_TEARDOWN'] = '1'
+
+import streamlit as st
+import traceback
+
+try:
+    # Rest of your imports and code
+    import torch
+    import segmentation_models_pytorch as smp
+    # ... rest of your app
+except Exception as e:
+    st.error(f"Error: {e}")
