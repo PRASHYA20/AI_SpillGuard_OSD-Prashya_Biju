@@ -1,7 +1,7 @@
 # Streamlit
 streamlit==1.50.0
 
-# PyTorch
+# PyTorch CPU for Python 3.11
 torch==2.8.0
 torchvision==0.15.2
 
