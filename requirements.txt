@@ -1,9 +1,8 @@
-streamlit==1.38.0
-torch==2.2.2
-torchvision==0.17.2
-segmentation-models-pytorch==0.3.3
-pillow
-matplotlib
-opencv-python-headless==4.10.0.84
-requests
-numpy
+streamlit==1.50.0
+torch==2.5.1
+torchvision==0.21.0
+Pillow==10.0.0
+numpy==1.26.0
+matplotlib==3.7.0
+requests==2.31.0
+opencv-python-headless==4.8.0.76
