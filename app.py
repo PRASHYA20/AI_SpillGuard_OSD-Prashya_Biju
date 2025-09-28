@@ -8,11 +8,12 @@ from sklearn.cluster import KMeans
 import base64
 import requests
 import torch
+import torch.nn as nn
 import torchvision.transforms as transforms
 from torchvision import models
 import tempfile
 import os
-import gdown  # For Google Drive, but we can adapt for Dropbox
+import urllib.parse
 
 # Page configuration
 st.set_page_config(
@@ -21,6 +22,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+class OilSpillModel(nn.Module):
+    def __init__(self, num_classes=1):
+        super(OilSpillModel, self).__init__()
+        # Using a pre-trained backbone for segmentation
+        self.backbone = models.segmentation.deeplabv3_resnet50(pretrained=False, num_classes=num_classes)
+        
+    def forward(self, x):
+        return self.backbone(x)['out']
 
 class OilSpillDetector:
     def __init__(self):
@@ -53,15 +63,26 @@ class OilSpillDetector:
                 help="Choose the detection algorithm. AI Model uses your trained neural network."
             )
             
-            # Sensitivity (for traditional methods)
-            sensitivity = st.slider(
-                "Detection Sensitivity",
-                min_value=0.1,
-                max_value=1.0,
-                value=0.7,
-                step=0.1,
-                help="Higher values detect more potential oil areas"
-            )
+            if detection_method == "ai_model":
+                # Confidence threshold for AI model
+                confidence_threshold = st.slider(
+                    "Confidence Threshold",
+                    min_value=0.1,
+                    max_value=0.9,
+                    value=0.5,
+                    step=0.1,
+                    help="Minimum confidence for AI model detection"
+                )
+            else:
+                # Sensitivity (for traditional methods)
+                sensitivity = st.slider(
+                    "Detection Sensitivity",
+                    min_value=0.1,
+                    max_value=1.0,
+                    value=0.7,
+                    step=0.1,
+                    help="Higher values detect more potential oil areas"
+                )
             
             # Minimum area
             min_area = st.slider(
@@ -73,14 +94,11 @@ class OilSpillDetector:
                 help="Filter out small detections below this pixel area"
             )
             
-            # Confidence threshold for AI model
-            confidence_threshold = st.slider(
-                "Confidence Threshold",
-                min_value=0.1,
-                max_value=0.9,
-                value=0.5,
-                step=0.1,
-                help="Minimum confidence for AI model detection"
+            # Visualization style
+            visualization_style = st.selectbox(
+                "Visualization Style",
+                ["black_areas", "red_overlay", "binary_mask"],
+                help="How to visualize detected oil spills"
             )
             
             # Process button
@@ -96,12 +114,12 @@ class OilSpillDetector:
             if self.model is not None:
                 st.success("✅ AI Model Loaded Successfully")
             else:
-                st.warning("⚠️ Using Traditional CV Methods Only")
+                st.warning("⚠️ AI Model Not Loaded - Using Traditional Methods")
             
             st.subheader("About")
             st.info(
                 "This app uses AI and computer vision to detect oil spills in images. "
-                "The AI model option uses your trained neural network for the most accurate results."
+                "Oil spills are shown in black areas for clear visualization."
             )
         
         # Main content area
@@ -127,20 +145,29 @@ class OilSpillDetector:
                     try:
                         if detection_method == "ai_model" and self.model is not None:
                             # Use AI model
+                            confidence_threshold = confidence_threshold if 'confidence_threshold' in locals() else 0.5
                             result_image, mask, stats = self.detect_with_ai_model(
-                                original_cv, confidence_threshold
+                                original_cv, confidence_threshold, min_area
                             )
+                            method_used = "AI Model"
                         else:
                             # Use traditional methods
+                            sensitivity = sensitivity if 'sensitivity' in locals() else 0.7
                             result_image, mask, stats = self.detect_oil_spills(
                                 original_cv, detection_method, sensitivity, min_area
                             )
+                            method_used = detection_method.replace("_", " ").title()
+                        
+                        # Apply visualization style
+                        result_image = self.apply_visualization_style(
+                            original_cv, mask, visualization_style
+                        )
                         
                         # Display results
-                        st.image(result_image, caption="Oil Spill Detection", use_column_width=True)
+                        st.image(result_image, caption=f"Oil Spill Detection ({method_used}) - Oil shown in black", use_column_width=True)
                         
                         # Show statistics
-                        self.display_statistics(stats)
+                        self.display_statistics(stats, method_used)
                         
                         # Download button
                         self.create_download_button(result_image)
@@ -153,23 +180,44 @@ class OilSpillDetector:
             else:
                 st.info("Results will appear here after processing")
     
+    def apply_visualization_style(self, original_image, mask, style):
+        """Apply different visualization styles for oil spill detection"""
+        if style == "black_areas":
+            # Show oil spills as black areas on original image
+            result_image = original_image.copy()
+            result_image[mask == 255] = [0, 0, 0]  # Black for oil spills
+            return result_image
+            
+        elif style == "red_overlay":
+            # Show oil spills with red transparent overlay
+            result_image = original_image.copy()
+            overlay = result_image.copy()
+            overlay[mask == 255] = [0, 0, 255]  # Red for oil
+            alpha = 0.3
+            result_image = cv2.addWeighted(overlay, alpha, original_image, 1 - alpha, 0)
+            return result_image
+            
+        elif style == "binary_mask":
+            # Show pure binary mask (white oil spills on black background)
+            result_image = np.zeros_like(original_image)
+            result_image[mask == 255] = [255, 255, 255]  # White oil spills on black background
+            return result_image
+    
     def load_model(self):
         """Load your AI model from Dropbox"""
         try:
-            # Replace with your actual Dropbox model URL
-            # You'll need to get a direct download link from Dropbox
-            model_url = st.secrets.get("MODEL_URL", "YOUR_DROPBOX_MODEL_URL_HERE")
+            # Your Dropbox model URL
+            model_url = "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&st=g0afxvrw&dl=1"
             
-            if model_url == "YOUR_DROPBOX_MODEL_URL_HERE":
-                st.sidebar.warning("Please configure your Dropbox model URL in secrets")
-                return
-            
-            with st.spinner("Loading AI model from Dropbox..."):
+            with st.sidebar.spinner("Loading AI model from Dropbox..."):
                 # Download model file
-                model_path = self.download_file_from_dropbox(model_url, "model.pth")
+                model_path = self.download_file_from_dropbox(model_url, "oil_spill_model.pth")
                 
-                # Load the model based on its type
-                self.model = self.load_model_from_file(model_path)
+                # Load the model
+                self.model = self.load_pytorch_model(model_path)
+                
+                if self.model is not None:
+                    st.sidebar.success("✅ AI Model Loaded Successfully")
                 
         except Exception as e:
             st.sidebar.error(f"Failed to load AI model: {str(e)}")
@@ -177,90 +225,100 @@ class OilSpillDetector:
     
     def download_file_from_dropbox(self, url, filename):
         """Download file from Dropbox URL"""
-        # Create temp directory
-        temp_dir = tempfile.gettempdir()
-        file_path = os.path.join(temp_dir, filename)
-        
-        # Download the file
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-        
-        with open(file_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        return file_path
-    
-    def load_model_from_file(self, model_path):
-        """Load the model based on file type and architecture"""
         try:
-            # Check file extension to determine model type
-            if model_path.endswith('.pth') or model_path.endswith('.pt'):
-                # PyTorch model
-                return self.load_pytorch_model(model_path)
-            elif model_path.endswith('.h5'):
-                # TensorFlow/Keras model
-                return self.load_keras_model(model_path)
-            elif model_path.endswith('.pkl'):
-                # Scikit-learn or other pickle model
-                return self.load_pickle_model(model_path)
+            # Create temp directory
+            temp_dir = tempfile.gettempdir()
+            file_path = os.path.join(temp_dir, filename)
+            
+            # Use requests to download the file
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, stream=True)
+            response.raise_for_status()
+            
+            # Check file size
+            total_size = int(response.headers.get('content-length', 0))
+            
+            progress_bar = st.sidebar.progress(0)
+            status_text = st.sidebar.empty()
+            
+            with open(file_path, 'wb') as f:
+                downloaded = 0
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            progress = downloaded / total_size
+                            progress_bar.progress(progress)
+                            status_text.text(f"Downloading: {downloaded/(1024*1024):.1f}MB / {total_size/(1024*1024):.1f}MB")
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            # Verify file was downloaded
+            if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+                st.sidebar.success(f"Model downloaded: {os.path.getsize(file_path)/(1024*1024):.1f}MB")
+                return file_path
             else:
-                st.error(f"Unsupported model format: {model_path}")
-                return None
+                raise Exception("Downloaded file is empty or doesn't exist")
+                
         except Exception as e:
-            st.error(f"Error loading model: {str(e)}")
-            return None
+            st.sidebar.error(f"Download failed: {str(e)}")
+            raise
     
     def load_pytorch_model(self, model_path):
-        """Load PyTorch model"""
+        """Load PyTorch model with error handling for different formats"""
         try:
-            # Try to detect model architecture
-            checkpoint = torch.load(model_path, map_location='cpu')
+            # Try different loading methods
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
-            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                # It's a checkpoint with state dict
-                model = self.create_model_architecture()  # You'll need to define this
-                model.load_state_dict(checkpoint['model_state_dict'])
-            else:
-                # Assume it's a full model
-                model = checkpoint
+            # Method 1: Try loading as a state dict
+            try:
+                checkpoint = torch.load(model_path, map_location=device)
+                
+                if isinstance(checkpoint, dict):
+                    # It's likely a checkpoint dictionary
+                    if 'model_state_dict' in checkpoint:
+                        model = OilSpillModel(num_classes=1)
+                        model.load_state_dict(checkpoint['model_state_dict'])
+                    elif 'state_dict' in checkpoint:
+                        model = OilSpillModel(num_classes=1)
+                        model.load_state_dict(checkpoint['state_dict'])
+                    else:
+                        # Try to load directly as state dict
+                        model = OilSpillModel(num_classes=1)
+                        model.load_state_dict(checkpoint)
+                else:
+                    # It's a full model
+                    model = checkpoint
+                
+            except:
+                # Method 2: Try loading with different parameters
+                try:
+                    model = torch.load(model_path, map_location=device)
+                except:
+                    # Method 3: Try loading as a DeepLabV3 model
+                    model = models.segmentation.deeplabv3_resnet50(pretrained=False, num_classes=1)
+                    checkpoint = torch.load(model_path, map_location=device)
+                    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                        model.load_state_dict(checkpoint['state_dict'])
+                    else:
+                        model.load_state_dict(checkpoint)
             
             model.eval()
+            model.to(device)
+            
+            st.sidebar.info(f"Model loaded on: {device}")
             return model
             
         except Exception as e:
-            st.error(f"Error loading PyTorch model: {str(e)}")
+            st.sidebar.error(f"Error loading PyTorch model: {str(e)}")
             return None
     
-    def load_keras_model(self, model_path):
-        """Load Keras/TensorFlow model"""
-        try:
-            from tensorflow import keras
-            model = keras.models.load_model(model_path)
-            return model
-        except Exception as e:
-            st.error(f"Error loading Keras model: {str(e)}")
-            return None
-    
-    def load_pickle_model(self, model_path):
-        """Load pickle model"""
-        try:
-            import pickle
-            with open(model_path, 'rb') as f:
-                model = pickle.load(f)
-            return model
-        except Exception as e:
-            st.error(f"Error loading pickle model: {str(e)}")
-            return None
-    
-    def create_model_architecture(self):
-        """Define your model architecture here"""
-        # This should match the architecture used during training
-        # Example for a segmentation model:
-        model = models.segmentation.deeplabv3_resnet50(pretrained=False, num_classes=2)
-        return model
-    
-    def detect_with_ai_model(self, image, confidence_threshold=0.5):
+    def detect_with_ai_model(self, image, confidence_threshold=0.5, min_area=500):
         """Detect oil spills using AI model"""
         if self.model is None:
             raise ValueError("AI model not loaded")
@@ -270,57 +328,53 @@ class OilSpillDetector:
         
         # Run inference
         with torch.no_grad():
-            if isinstance(self.model, torch.nn.Module):
-                # PyTorch model
-                output = self.model(input_tensor)
-                if isinstance(output, dict):
-                    prediction = output['out'] if 'out' in output else output
-                else:
-                    prediction = output
-                
-                # Convert to probability mask
-                if prediction.shape[1] == 2:  # Binary segmentation
-                    prob_mask = torch.softmax(prediction, dim=1)[0, 1]  # Oil class
-                    mask_np = prob_mask.cpu().numpy()
-                else:
-                    mask_np = prediction[0, 0].cpu().numpy()
+            output = self.model(input_tensor)
             
-            elif hasattr(self.model, 'predict'):  # Keras model
-                prediction = self.model.predict(input_tensor)
-                mask_np = prediction[0, :, :, 1]  # Assuming binary classification
-            
+            # Handle different output formats
+            if isinstance(output, dict):
+                prediction = output['out'] if 'out' in output else output
             else:
-                raise ValueError("Unsupported model type")
+                prediction = output
+            
+            # Convert to probability mask
+            if prediction.shape[1] == 1:  # Single channel (sigmoid)
+                prob_mask = torch.sigmoid(prediction)[0, 0]
+            else:  # Multiple channels (softmax)
+                prob_mask = torch.softmax(prediction, dim=1)[0, 1]  # Assume class 1 is oil
+            
+            mask_np = prob_mask.cpu().numpy()
+        
+        # Resize back to original dimensions
+        original_height, original_width = image.shape[:2]
+        mask_resized = cv2.resize(mask_np, (original_width, original_height))
         
         # Apply confidence threshold
-        binary_mask = (mask_np > confidence_threshold).astype(np.uint8) * 255
+        binary_mask = (mask_resized > confidence_threshold).astype(np.uint8) * 255
         
         # Post-process mask
-        refined_mask = self.refine_detection_mask(binary_mask)
-        
-        # Create visualization
-        result_image = self.create_visualization(image, refined_mask)
+        refined_mask = self.refine_detection_mask(binary_mask, min_area)
         
         # Calculate statistics
         stats = self.calculate_statistics(refined_mask)
         
-        return result_image, refined_mask, stats
+        return image, refined_mask, stats
     
     def preprocess_for_model(self, image):
         """Preprocess image for AI model"""
-        # Resize to expected input size
-        input_size = (512, 512)  # Adjust based on your model
+        # Resize to expected input size (typical for segmentation models)
+        input_size = (512, 512)
         resized = cv2.resize(image, input_size)
         
-        # Normalize
+        # Normalize (ImageNet stats are common for pre-trained models)
         normalized = resized.astype(np.float32) / 255.0
+        normalized = (normalized - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
         
-        # Convert to tensor
-        tensor = torch.from_numpy(normalized).permute(2, 0, 1).unsqueeze(0)
+        # Convert to tensor and rearrange dimensions
+        tensor = torch.from_numpy(normalized).permute(2, 0, 1).unsqueeze(0).float()
         
         return tensor
-    
-    # Keep all the traditional detection methods from previous version
+
+    # Keep all the traditional detection methods
     def pil_to_cv2(self, pil_image):
         """Convert PIL Image to OpenCV format"""
         return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
@@ -493,25 +547,10 @@ class OilSpillDetector:
         # Refine the detection
         refined_mask = self.refine_detection_mask(mask, min_area)
         
-        # Create visualization and stats
-        result_image = self.create_visualization(image, refined_mask)
+        # Calculate statistics
         stats = self.calculate_statistics(refined_mask)
         
-        return result_image, refined_mask, stats
-    
-    def create_visualization(self, image, mask):
-        """Create visualization with oil spill overlay"""
-        result_image = image.copy()
-        
-        # Create a colored overlay
-        overlay = result_image.copy()
-        overlay[mask == 255] = [0, 0, 255]  # Red for oil
-        
-        # Blend with original
-        alpha = 0.3
-        result_image = cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0)
-        
-        return result_image
+        return image, refined_mask, stats
     
     def calculate_statistics(self, mask):
         """Calculate detection statistics"""
@@ -531,9 +570,11 @@ class OilSpillDetector:
         
         return stats
     
-    def display_statistics(self, stats):
+    def display_statistics(self, stats, method_used):
         """Display detection statistics"""
         st.subheader("Detection Statistics")
+        
+        st.info(f"**Method Used:** {method_used}")
         
         col1, col2, col3 = st.columns(3)
         
