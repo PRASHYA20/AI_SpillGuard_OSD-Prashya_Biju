@@ -1,4 +1,16 @@
+import os
+os.environ['TIMM_DISABLE_TEARDOWN'] = '1'
+
 import streamlit as st
+import traceback
+
+try:
+    # Rest of your imports and code
+    import torch
+    import segmentation_models_pytorch as smp
+    # ... rest of your app
+except Exception as e:
+    st.error(f"Error: {e}")import streamlit as st
 import traceback
 import torch
 import segmentation_models_pytorch as smp
@@ -204,3 +216,4 @@ try:
 except Exception as e:
     st.error(f"🚨 Critical App Error: {e}")
     st.code(traceback.format_exc())
+
