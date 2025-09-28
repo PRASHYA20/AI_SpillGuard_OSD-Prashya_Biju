@@ -1,9 +1,9 @@
 # Streamlit
 streamlit==1.50.0
 
-# PyTorch CPU for Python 3.11
-torch==2.8.0
-torchvision==0.15.2
+# PyTorch CPU
+torch==2.0.1+cpu
+torchvision==0.15.2+cpu
 
 # Image and array handling
 Pillow==10.0.0
