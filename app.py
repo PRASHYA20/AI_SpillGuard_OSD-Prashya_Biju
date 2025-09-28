@@ -1,87 +1,61 @@
 import streamlit as st
+import tensorflow as tf
 import torch
-import torchvision.transforms as transforms
-from PIL import Image
 import numpy as np
-import cv2
+import pandas as pd
+from PIL import Image
+import io
 
-# -------------------
-# Device Setup
-# -------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# -------------------
-# Load Model
-# -------------------
-MODEL_PATH = "oil_spill_model_deploy.pth"
+st.set_page_config(page_title="Deep Learning Model", layout="wide")
 
 @st.cache_resource
 def load_model():
-    model = torch.load(MODEL_PATH, map_location=device)
-    model.eval()
-    return model
+    try:
+        # For TensorFlow
+        # model = tf.keras.models.load_model('model.h5')
+        
+        # For PyTorch
+        # model = torch.load('model.pth')
+        # model.eval()
+        
+        # For pickle files
+        with open('model.pkl', 'rb') as file:
+            model = pickle.load(file)
+        return model
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None
 
-model = load_model()
+def main():
+    st.title("🧠 Deep Learning Model Deployment")
+    
+    model = load_model()
+    if model is None:
+        return
+    
+    input_type = st.radio("Input Type", ["Numerical", "Image", "Text"])
+    
+    if input_type == "Numerical":
+        st.header("Numerical Input")
+        # Add numerical input fields similar to previous examples
+        
+    elif input_type == "Image":
+        st.header("Image Input")
+        uploaded_file = st.file_uploader("Upload an image", type=['png', 'jpg', 'jpeg'])
+        
+        if uploaded_file is not None:
+            image = Image.open(uploaded_file)
+            st.image(image, caption="Uploaded Image", use_column_width=True)
+            
+            # Add image preprocessing and prediction logic here
+            
+    elif input_type == "Text":
+        st.header("Text Input")
+        text_input = st.text_area("Enter text for prediction")
+        
+        if st.button("Analyze Text") and text_input:
+            # Add text preprocessing and prediction logic here
+            pass
 
-# -------------------
-# Image Transform
-# -------------------
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),   # resize to training size
-    transforms.ToTensor(),
-])
-
-# -------------------
-# Prediction Function
-# -------------------
-def predict(image: Image.Image):
-    img_tensor = transform(image).unsqueeze(0).to(device)
-
-    with torch.no_grad():
-        output = model(img_tensor)
-        if output.shape[1] == 1:  # binary segmentation
-            output = torch.sigmoid(output)
-            mask = (output > 0.5).float()
-        else:  # multi-class segmentation
-            mask = torch.argmax(output, dim=1).unsqueeze(1)
-
-    mask = mask.squeeze().cpu().numpy().astype(np.uint8)
-    return mask
-
-# -------------------
-# Overlay Function
-# -------------------
-def create_overlay(original: Image.Image, mask: np.ndarray):
-    # Resize original image to match mask
-    original_resized = original.resize((mask.shape[1], mask.shape[0]))
-    original_np = np.array(original_resized)
-
-    # Create a red mask where oil spill = 1
-    color_mask = np.zeros_like(original_np)
-    color_mask[mask == 1] = [255, 0, 0]  # Red for oil spill
-
-    # Overlay with transparency
-    overlay = cv2.addWeighted(original_np, 0.7, color_mask, 0.3, 0)
-    return overlay
-
-# -------------------
-# Streamlit UI
-# -------------------
-st.title("🌊 AI SpillGuard - Oil Spill Segmentation with Overlay")
-
-uploaded_file = st.file_uploader("Upload a satellite image", type=["jpg", "png", "jpeg", "tif"])
-
-if uploaded_file is not None:
-    # Load input image
-    image = Image.open(uploaded_file).convert("RGB")
-    st.image(image, caption="Uploaded Image", use_container_width=True)
-
-    # Run prediction
-    mask = predict(image)
-
-    # Show raw mask
-    st.image(mask * 255, caption="Predicted Oil Spill Mask", use_container_width=True)
-
-    # Show overlay
-    overlay = create_overlay(image, mask)
-    st.image(overlay, caption="Overlay Result (Oil Spill in Red)", use_container_width=True)
+if __name__ == "__main__":
+    main()
