@@ -1,6 +1,6 @@
 import streamlit as st
 import torch
-import torch.nn as nn
+import segmentation_models_pytorch as smp
 from PIL import Image
 import numpy as np
 import requests
@@ -12,44 +12,6 @@ import io
 # -----------------------------
 MODEL_PATH = "oil_spill_model_deploy.pth"
 DROPBOX_URL = "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&dl=1"
-
-# -----------------------------
-# Simple UNet Model Definition
-# -----------------------------
-class SimpleUNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=1):
-        super(SimpleUNet, self).__init__()
-        # Encoder
-        self.enc1 = self._block(in_channels, 64)
-        self.enc2 = self._block(64, 128)
-        self.enc3 = self._block(128, 256)
-        self.enc4 = self._block(256, 512)
-        
-        # Decoder
-        self.dec1 = self._block(512, 256)
-        self.dec2 = self._block(256, 128)
-        self.dec3 = self._block(128, 64)
-        self.final = nn.Conv2d(64, out_channels, kernel_size=1)
-        
-    def _block(self, in_channels, out_channels):
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, 3, padding=1),
-            nn.ReLU(inplace=True)
-        )
-    
-    def forward(self, x):
-        # Simple forward pass
-        x = self.enc1(x)
-        x = self.enc2(x)
-        x = self.enc3(x)
-        x = self.enc4(x)
-        x = self.dec1(x)
-        x = self.dec2(x)
-        x = self.dec3(x)
-        x = self.final(x)
-        return x
 
 # -----------------------------
 # Download model if missing
@@ -80,6 +42,24 @@ def download_model():
     return True
 
 # -----------------------------
+# Create UNet Model (using segmentation_models_pytorch)
+# -----------------------------
+def create_unet_model():
+    try:
+        # Create the same model architecture that was used for training
+        model = smp.Unet(
+            encoder_name="resnet34",        # This matches your trained model
+            encoder_weights=None,           # Don't load ImageNet weights
+            in_channels=3,
+            classes=1,
+            activation=None,
+        )
+        return model
+    except Exception as e:
+        st.error(f"❌ Error creating model: {e}")
+        return None
+
+# -----------------------------
 # Load Model
 # -----------------------------
 @st.cache_resource
@@ -91,10 +71,12 @@ def load_model():
         if not download_model():
             return None, device
 
-        # Create model
-        model = SimpleUNet()
-        
-        # Load pre-trained weights
+        # Create model with correct architecture
+        model = create_unet_model()
+        if model is None:
+            return None, device
+
+        # Load the pre-trained weights
         checkpoint = torch.load(MODEL_PATH, map_location=device)
         state_dict = checkpoint.get("model_state_dict", checkpoint)
 
@@ -106,6 +88,7 @@ def load_model():
             else:
                 new_state_dict[k] = v
 
+        # Load the state dict
         model.load_state_dict(new_state_dict)
         model.to(device)
         model.eval()
@@ -125,7 +108,7 @@ def preprocess_image(image):
         image_resized = image.resize((256, 256))
         img_array = np.array(image_resized).astype(np.float32) / 255.0
 
-        # ImageNet normalization
+        # ImageNet normalization (same as during training)
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
         img_array = (img_array - mean) / std
@@ -191,7 +174,7 @@ with st.sidebar:
     confidence_threshold = st.slider("Confidence Threshold", 0.1, 0.9, 0.5, 0.05,
                                    help="Higher values = more confident detections")
     st.header("ℹ️ About")
-    st.write("This app uses a UNet deep learning model to detect oil spills in satellite imagery.")
+    st.write("This app uses a UNet deep learning model with ResNet34 encoder to detect oil spills in satellite imagery.")
 
 # Initialize model
 if 'model' not in st.session_state:
@@ -311,8 +294,8 @@ else:
 # Model information
 with st.expander("🔧 Model Information"):
     st.write("""
-    **Model Architecture:** UNet with custom encoder
-    **Input Size:** 256x256 pixels
+    **Model Architecture:** UNet with ResNet34 encoder
+    **Input Size:** 256x256 pixels  
     **Output:** Binary segmentation mask
     **Training:** Trained on satellite imagery with oil spill annotations
     """)
