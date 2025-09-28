@@ -1,237 +1,417 @@
-import streamlit as st
-import torch
-import torch.nn as nn
-from PIL import Image
+import cv2
 import numpy as np
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from PIL import Image, ImageTk
 import os
-import io
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
 
-# -----------------------------
-# Simple Model for Oil Spill Detection
-# -----------------------------
-class OilSpillDetector(nn.Module):
-    def __init__(self):
-        super(OilSpillDetector, self).__init__()
-        self.layers = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 1, 1),
-            nn.Sigmoid()
+class OilSpillDetector:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Advanced Oil Spill Detection System")
+        self.root.geometry("1200x800")
+        
+        self.original_image = None
+        self.processed_image = None
+        self.detection_mask = None
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        # Main frame
+        main_frame = ttk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Control panel
+        control_frame = ttk.LabelFrame(main_frame, text="Controls", padding=10)
+        control_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Buttons
+        btn_frame = ttk.Frame(control_frame)
+        btn_frame.pack(fill=tk.X)
+        
+        ttk.Button(btn_frame, text="Load Image", command=self.load_image).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Detect Oil Spills", command=self.detect_oil).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Save Result", command=self.save_result).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Advanced Analysis", command=self.advanced_analysis).pack(side=tk.LEFT, padx=5)
+        
+        # Parameters frame
+        params_frame = ttk.Frame(control_frame)
+        params_frame.pack(fill=tk.X, pady=10)
+        
+        # Sensitivity slider
+        ttk.Label(params_frame, text="Detection Sensitivity:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        self.sensitivity_var = tk.DoubleVar(value=0.7)
+        sensitivity_scale = ttk.Scale(params_frame, from_=0.1, to=1.0, variable=self.sensitivity_var, 
+                                     orient=tk.HORIZONTAL)
+        sensitivity_scale.grid(row=0, column=1, sticky=tk.EW, padx=5)
+        
+        # Min area slider
+        ttk.Label(params_frame, text="Minimum Area:").grid(row=1, column=0, sticky=tk.W, padx=5)
+        self.min_area_var = tk.IntVar(value=500)
+        min_area_scale = ttk.Scale(params_frame, from_=100, to=5000, variable=self.min_area_var,
+                                  orient=tk.HORIZONTAL)
+        min_area_scale.grid(row=1, column=1, sticky=tk.EW, padx=5)
+        
+        params_frame.columnconfigure(1, weight=1)
+        
+        # Detection method
+        ttk.Label(params_frame, text="Detection Method:").grid(row=2, column=0, sticky=tk.W, padx=5)
+        self.method_var = tk.StringVar(value="advanced")
+        methods = ttk.Combobox(params_frame, textvariable=self.method_var, 
+                              values=["basic", "advanced", "kmeans", "combined"])
+        methods.grid(row=2, column=1, sticky=tk.EW, padx=5)
+        
+        # Image display frame
+        display_frame = ttk.Frame(main_frame)
+        display_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Original image
+        self.original_frame = ttk.LabelFrame(display_frame, text="Original Image")
+        self.original_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        
+        self.original_label = ttk.Label(self.original_frame)
+        self.original_label.pack(padx=10, pady=10)
+        
+        # Processed image
+        self.processed_frame = ttk.LabelFrame(display_frame, text="Oil Spill Detection Results")
+        self.processed_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
+        
+        self.processed_label = ttk.Label(self.processed_frame)
+        self.processed_label.pack(padx=10, pady=10)
+        
+        # Status bar
+        self.status_var = tk.StringVar(value="Ready to load image")
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    
+    def load_image(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Image",
+            filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tiff")]
         )
+        
+        if file_path:
+            try:
+                self.original_image = cv2.imread(file_path)
+                if self.original_image is None:
+                    raise ValueError("Could not load image")
+                
+                self.display_image(self.original_image, self.original_label)
+                self.status_var.set(f"Loaded: {os.path.basename(file_path)}")
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load image: {str(e)}")
     
-    def forward(self, x):
-        return self.layers(x)
-
-# -----------------------------
-# Streamlit App
-# -----------------------------
-st.set_page_config(page_title="Oil Spill Detection", page_icon="🌊", layout="wide")
-st.title("🌊 AI Oil Spill Detection")
-st.write("Upload satellite imagery to detect oil spills using deep learning")
-
-# Initialize model
-if 'model' not in st.session_state:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = OilSpillDetector()
-    model.to(device)
-    model.eval()
-    st.session_state.model = model
-    st.session_state.device = device
-    st.success("✅ AI Model Ready!")
-
-# File upload
-uploaded_file = st.file_uploader("📤 Upload Satellite Image", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    try:
-        # Load and display original image
-        original_image = Image.open(uploaded_file).convert("RGB")
+    def preprocess_image(self, image):
+        """Enhanced preprocessing for better oil spill detection"""
+        # Convert to appropriate color spaces
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         
-        col1, col2 = st.columns(2)
+        # Enhance contrast using CLAHE
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        lab[:,:,0] = clahe.apply(lab[:,:,0])
+        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
         
-        with col1:
-            st.subheader("📷 Original Image")
-            st.image(original_image, use_column_width=True)
+        # Noise reduction
+        denoised = cv2.medianBlur(enhanced, 5)
         
-        if st.button("🎯 Detect Oil Spills", type="primary"):
-            with st.spinner("🔄 Analyzing image with AI..."):
-                try:
-                    # Preprocess image
-                    image_resized = original_image.resize((256, 256))
-                    img_array = np.array(image_resized).astype(np.float32) / 255.0
-                    
-                    # Normalize
-                    mean = np.array([0.485, 0.456, 0.406])
-                    std = np.array([0.229, 0.224, 0.225])
-                    img_array = (img_array - mean) / std
-                    
-                    # Convert to tensor
-                    img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).float()
-                    img_tensor = img_tensor.to(st.session_state.device)
-                    
-                    # AI Prediction (simulated since model isn't trained)
-                    with torch.no_grad():
-                        # For demo purposes, create a realistic-looking prediction
-                        output = st.session_state.model(img_tensor)
-                        
-                        # Create simulated oil spill patterns
-                        height, width = 256, 256
-                        y, x = np.ogrid[:height, :width]
-                        
-                        # Create circular spill patterns
-                        center_x, center_y = width // 2, height // 2
-                        radius1 = min(width, height) // 4
-                        radius2 = min(width, height) // 6
-                        
-                        circle1 = (x - center_x) ** 2 + (y - center_y) ** 2 <= radius1 ** 2
-                        circle2 = (x - center_x + 50) ** 2 + (y - center_y - 30) ** 2 <= radius2 ** 2
-                        
-                        # Combine patterns
-                        spill_mask = circle1 | circle2
-                        
-                        # Add some noise for realism
-                        noise = np.random.rand(height, width) > 0.95
-                        spill_mask = spill_mask | noise
-                        
-                        # Convert to proper format
-                        pred_mask = spill_mask.astype(np.float32)
-                    
-                    # Post-process prediction
-                    binary_mask = (pred_mask > 0.3).astype(np.uint8) * 255
-                    
-                    # Resize back to original size
-                    mask_resized = Image.fromarray(binary_mask).resize(original_image.size, Image.NEAREST)
-                    
-                    # Create overlay
-                    original_np = np.array(original_image)
-                    mask_np = np.array(mask_resized)
-                    
-                    # Create red overlay for oil spills
-                    overlay = original_np.copy()
-                    overlay[mask_np > 0] = [255, 0, 0]  # Red color
-                    
-                    # Blend with original
-                    alpha = 0.6
-                    blended = (original_np * (1 - alpha) + overlay * alpha).astype(np.uint8)
-                    overlay_image = Image.fromarray(blended)
-                    
-                    with col2:
-                        st.subheader("🔍 AI Detection Results")
-                        st.image(overlay_image, 
-                               caption="Oil Spill Detection (Red areas = Detected Oil)", 
-                               use_column_width=True)
-                    
-                    # Calculate metrics
-                    spill_pixels = np.sum(mask_np > 0)
-                    total_pixels = mask_np.size
-                    spill_percentage = (spill_pixels / total_pixels) * 100
-                    
-                    # Display metrics
-                    st.subheader("📊 Detection Analysis")
-                    
-                    metric_col1, metric_col2, metric_col3 = st.columns(3)
-                    
-                    with metric_col1:
-                        st.metric("Oil Spill Coverage", f"{spill_percentage:.2f}%")
-                    
-                    with metric_col2:
-                        st.metric("Detection Confidence", "92%")
-                    
-                    with metric_col3:
-                        if spill_percentage > 1.0:
-                            status = "🔴 Oil Spill Detected"
-                            alert = "High Priority"
-                        else:
-                            status = "🟢 No Significant Spill"
-                            alert = "Low Priority"
-                        st.metric("Status", status)
-                        st.metric("Alert Level", alert)
-                    
-                    # Risk assessment
-                    if spill_percentage > 5.0:
-                        st.error("🚨 HIGH RISK: Significant oil spill detected. Immediate action recommended.")
-                    elif spill_percentage > 1.0:
-                        st.warning("⚠️ MEDIUM RISK: Oil spill detected. Monitoring recommended.")
-                    else:
-                        st.success("✅ LOW RISK: No significant oil spill detected.")
-                    
-                    # Download results
-                    st.subheader("💾 Download Results")
-                    
-                    download_col1, download_col2 = st.columns(2)
-                    
-                    with download_col1:
-                        # Download detection mask
-                        mask_buffer = io.BytesIO()
-                        mask_resized.save(mask_buffer, format="PNG")
-                        st.download_button(
-                            label="📥 Download Detection Mask",
-                            data=mask_buffer.getvalue(),
-                            file_name="oil_spill_detection_mask.png",
-                            mime="image/png",
-                            help="Download the binary detection mask"
-                        )
-                    
-                    with download_col2:
-                        # Download overlay image
-                        overlay_buffer = io.BytesIO()
-                        overlay_image.save(overlay_buffer, format="PNG")
-                        st.download_button(
-                            label="📥 Download Overlay Image",
-                            data=overlay_buffer.getvalue(),
-                            file_name="oil_spill_overlay.png",
-                            mime="image/png",
-                            help="Download the image with detection overlay"
-                        )
-                    
-                    st.balloons()
-                    
-                except Exception as e:
-                    st.error(f"❌ Analysis error: {e}")
-                    st.info("Using fallback analysis method...")
-                    
-                    # Fallback: simple color-based analysis
-                    img_array = np.array(original_image)
-                    blue_channel = img_array[:, :, 2]
-                    water_mask = blue_channel > np.mean(blue_channel) * 1.2
-                    
-                    # Simulate oil spills as dark patches in water
-                    oil_mask = blue_channel < np.mean(blue_channel) * 0.8
-                    oil_mask = oil_mask & water_mask
-                    
-                    overlay = img_array.copy()
-                    overlay[oil_mask] = [255, 0, 0]
-                    
-                    st.image(overlay, caption="Basic Analysis Results", use_column_width=True)
-                    st.warning("Basic analysis completed. AI model requires trained weights for full accuracy.")
-                    
-    except Exception as e:
-        st.error(f"❌ Error processing image: {e}")
-
-else:
-    st.info("👆 Please upload a satellite image to begin oil spill detection")
-
-# Instructions
-with st.expander("📖 How to use this tool"):
-    st.write("""
-    1. **Upload** a satellite image (JPG, JPEG, or PNG format)
-    2. **Click** the 'Detect Oil Spills' button
-    3. **Review** the AI detection results and metrics
-    4. **Download** the detection masks and overlays
-    5. **Take action** based on the risk assessment
+        return denoised, hsv, lab
     
-    **Detection Colors:**
-    - 🔴 Red: Detected oil spills
-    - 🟢 Green: Clean water/land areas
-    """)
+    def basic_color_detection(self, image, hsv, lab):
+        """Basic color-based oil spill detection"""
+        # HSV ranges for oil sheen (adjust based on your images)
+        hsv_lower1 = np.array([0, 0, 50])
+        hsv_upper1 = np.array([180, 80, 200])
+        
+        hsv_lower2 = np.array([100, 0, 30])
+        hsv_upper2 = np.array([140, 80, 150])
+        
+        # LAB ranges for oil
+        lab_lower = np.array([0, 120, 120])
+        lab_upper = np.array([255, 145, 145])
+        
+        # Create masks
+        hsv_mask1 = cv2.inRange(hsv, hsv_lower1, hsv_upper1)
+        hsv_mask2 = cv2.inRange(hsv, hsv_lower2, hsv_upper2)
+        lab_mask = cv2.inRange(lab, lab_lower, lab_upper)
+        
+        # Combine masks
+        combined_mask = cv2.bitwise_or(hsv_mask1, hsv_mask2)
+        combined_mask = cv2.bitwise_or(combined_mask, lab_mask)
+        
+        return combined_mask
+    
+    def advanced_edge_detection(self, image, gray):
+        """Edge-aware oil spill detection"""
+        # Calculate gradients
+        sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
+        
+        # Normalize
+        gradient_magnitude = cv2.normalize(gradient_magnitude, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        
+        # Adaptive thresholding
+        adaptive_thresh = cv2.adaptiveThreshold(
+            gradient_magnitude, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 11, 2
+        )
+        
+        return adaptive_thresh
+    
+    def kmeans_segmentation(self, image, k=4):
+        """K-means clustering for oil spill segmentation"""
+        # Reshape image to 2D array of pixels
+        pixel_values = image.reshape((-1, 3))
+        pixel_values = np.float32(pixel_values)
+        
+        # Perform K-means clustering
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+        _, labels, centers = cv2.kmeans(pixel_values, k, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+        
+        # Convert back to 8-bit values
+        centers = np.uint8(centers)
+        segmented_data = centers[labels.flatten()]
+        segmented_image = segmented_data.reshape(image.shape)
+        
+        return segmented_image, labels.reshape(image.shape[:2])
+    
+    def refine_detection_mask(self, mask, min_area=500):
+        """Refine the detection mask using morphological operations and contour analysis"""
+        # Morphological operations to clean up the mask
+        kernel = np.ones((5,5), np.uint8)
+        cleaned_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_OPEN, kernel)
+        
+        # Find contours
+        contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours by area and shape
+        refined_mask = np.zeros_like(cleaned_mask)
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            
+            if area > min_area:
+                # Calculate contour properties
+                hull = cv2.convexHull(contour)
+                hull_area = cv2.contourArea(hull)
+                
+                if hull_area > 0:
+                    solidity = area / hull_area
+                    
+                    # Only keep contours with reasonable solidity
+                    if solidity > 0.2:  # Lower threshold for irregular oil shapes
+                        cv2.drawContours(refined_mask, [contour], -1, 255, -1)
+        
+        # Final smoothing
+        refined_mask = cv2.morphologyEx(refined_mask, cv2.MORPH_CLOSE, kernel)
+        
+        return refined_mask
+    
+    def detect_oil_spills_combined(self, image):
+        """Combined detection method using multiple approaches"""
+        # Preprocessing
+        processed, hsv, lab = self.preprocess_image(image)
+        gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+        
+        # Get masks from different methods
+        color_mask = self.basic_color_detection(processed, hsv, lab)
+        edge_mask = self.advanced_edge_detection(processed, gray)
+        
+        # K-means segmentation
+        segmented, labels = self.kmeans_segmentation(processed, k=4)
+        
+        # Assume oil is in the darker clusters
+        kmeans_mask = np.zeros_like(gray)
+        unique_labels = np.unique(labels)
+        
+        for label in unique_labels:
+            cluster_mean = np.mean(gray[labels == label])
+            if cluster_mean < 100:  # Dark clusters might be oil
+                kmeans_mask[labels == label] = 255
+        
+        # Combine masks with weights
+        combined_mask = color_mask.astype(float) * 0.5 + \
+                       edge_mask.astype(float) * 0.3 + \
+                       kmeans_mask.astype(float) * 0.2
+        
+        # Normalize and threshold
+        combined_mask = cv2.normalize(combined_mask, None, 0, 255, cv2.NORM_MINMAX)
+        _, final_mask = cv2.threshold(combined_mask, 
+                                    self.sensitivity_var.get() * 255, 
+                                    255, cv2.THRESH_BINARY)
+        
+        final_mask = final_mask.astype(np.uint8)
+        
+        return final_mask
+    
+    def detect_oil(self):
+        if self.original_image is None:
+            messagebox.showwarning("Warning", "Please load an image first")
+            return
+        
+        try:
+            self.status_var.set("Detecting oil spills...")
+            self.root.update()
+            
+            method = self.method_var.get()
+            min_area = self.min_area_var.get()
+            
+            if method == "basic":
+                processed, hsv, lab = self.preprocess_image(self.original_image)
+                mask = self.basic_color_detection(processed, hsv, lab)
+            elif method == "advanced":
+                gray = cv2.cvtColor(self.original_image, cv2.COLOR_BGR2GRAY)
+                mask = self.advanced_edge_detection(self.original_image, gray)
+            elif method == "kmeans":
+                segmented, labels = self.kmeans_segmentation(self.original_image)
+                mask = np.zeros_like(self.original_image[:,:,0])
+                # Select darker clusters as potential oil
+                for label in np.unique(labels):
+                    if np.mean(self.original_image[labels == label]) < 100:
+                        mask[labels == label] = 255
+            else:  # combined
+                mask = self.detect_oil_spills_combined(self.original_image)
+            
+            # Refine the detection
+            self.detection_mask = self.refine_detection_mask(mask, min_area)
+            
+            # Create visualization
+            result_image = self.original_image.copy()
+            result_image[self.detection_mask == 255] = [0, 0, 255]  # Red for oil
+            
+            # Add transparency for better visualization
+            overlay = result_image.copy()
+            cv2.addWeighted(overlay, 0.3, self.original_image, 0.7, 0, result_image)
+            
+            self.processed_image = result_image
+            self.display_image(result_image, self.processed_label)
+            
+            # Calculate statistics
+            total_pixels = self.original_image.shape[0] * self.original_image.shape[1]
+            oil_pixels = np.sum(self.detection_mask == 255)
+            oil_percentage = (oil_pixels / total_pixels) * 100
+            
+            self.status_var.set(
+                f"Detection complete: {oil_percentage:.2f}% oil coverage "
+                f"({oil_pixels} pixels) using {method} method"
+            )
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Detection failed: {str(e)}")
+            self.status_var.set("Detection failed")
+    
+    def advanced_analysis(self):
+        if self.original_image is None or self.detection_mask is None:
+            messagebox.showwarning("Warning", "Please detect oil spills first")
+            return
+        
+        try:
+            # Create analysis window
+            analysis_window = tk.Toplevel(self.root)
+            analysis_window.title("Advanced Analysis")
+            analysis_window.geometry("1000x700")
+            
+            # Calculate detailed statistics
+            contours, _ = cv2.findContours(self.detection_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            analysis_text = f"Advanced Oil Spill Analysis\n"
+            analysis_text += f"==========================\n\n"
+            analysis_text += f"Total contaminated area: {np.sum(self.detection_mask == 255)} pixels\n"
+            analysis_text += f"Number of separate oil spills: {len(contours)}\n\n"
+            
+            # Individual spill analysis
+            analysis_text += "Individual Spill Analysis:\n"
+            for i, contour in enumerate(contours):
+                area = cv2.contourArea(contour)
+                perimeter = cv2.arcLength(contour, True)
+                
+                if perimeter > 0:
+                    circularity = 4 * np.pi * area / (perimeter * perimeter)
+                else:
+                    circularity = 0
+                
+                analysis_text += f"Spill {i+1}: Area={area:.0f} px, Perimeter={perimeter:.0f} px, Circularity={circularity:.3f}\n"
+            
+            # Display analysis
+            text_widget = tk.Text(analysis_window, wrap=tk.WORD)
+            text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            text_widget.insert(tk.END, analysis_text)
+            
+            # Add visualization
+            viz_frame = ttk.Frame(analysis_window)
+            viz_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Create detailed visualization
+            detailed_viz = self.original_image.copy()
+            for i, contour in enumerate(contours):
+                color = [np.random.randint(0, 255) for _ in range(3)]
+                cv2.drawContours(detailed_viz, [contour], -1, color, 3)
+                cv2.putText(detailed_viz, str(i+1), 
+                           tuple(contour[0][0]), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            
+            # Convert and display
+            detailed_viz_rgb = cv2.cvtColor(detailed_viz, cv2.COLOR_BGR2RGB)
+            detailed_viz_pil = Image.fromarray(detailed_viz_rgb)
+            detailed_viz_tk = ImageTk.PhotoImage(detailed_viz_pil.resize((400, 300)))
+            
+            viz_label = ttk.Label(viz_frame, image=detailed_viz_tk)
+            viz_label.image = detailed_viz_tk
+            viz_label.pack()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Advanced analysis failed: {str(e)}")
+    
+    def save_result(self):
+        if self.processed_image is None:
+            messagebox.showwarning("Warning", "No processed image to save")
+            return
+        
+        file_path = filedialog.asksaveasfilename(
+            title="Save Result",
+            defaultextension=".png",
+            filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            try:
+                cv2.imwrite(file_path, self.processed_image)
+                messagebox.showinfo("Success", f"Result saved to {file_path}")
+                self.status_var.set(f"Result saved: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save image: {str(e)}")
+    
+    def display_image(self, image, label):
+        """Display image in Tkinter label"""
+        # Resize image to fit display
+        h, w = image.shape[:2]
+        max_size = 400
+        
+        if h > w:
+            new_h = max_size
+            new_w = int(w * max_size / h)
+        else:
+            new_w = max_size
+            new_h = int(h * max_size / w)
+        
+        # Convert BGR to RGB for display
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_pil = Image.fromarray(image_rgb)
+        image_tk = ImageTk.PhotoImage(image_pil.resize((new_w, new_h)))
+        
+        label.configure(image=image_tk)
+        label.image = image_tk
 
-with st.expander("🔧 Technical Information"):
-    st.write("""
-    **AI Model:** Custom Convolutional Neural Network
-    **Input:** Satellite imagery (RGB)
-    **Output:** Oil spill probability masks
-    **Processing:** Real-time AI inference
-    **Accuracy:** High detection confidence for oil spill patterns
-    """)
+def main():
+    root = tk.Tk()
+    app = OilSpillDetector(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
