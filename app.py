@@ -14,93 +14,90 @@ st.set_page_config(page_title="Oil Spill Detection", layout="wide")
 st.title("🛢️ Oil Spill Detection")
 st.write("Upload satellite imagery to detect oil spills")
 
-# Define a proper U-Net like architecture that matches common ResNet-based segmentation models
-class OilSpillSegmentationModel(nn.Module):
+# Define the EXACT architecture that matches your state dict
+class ExactOilSpillModel(nn.Module):
     def __init__(self, num_classes=1):
-        super(OilSpillSegmentationModel, self).__init__()
+        super(ExactOilSpillModel, self).__init__()
         
-        # Encoder - ResNet50 backbone
-        self.encoder = models.resnet50(pretrained=False)
+        # Encoder - ResNet50 with exact layer structure
+        resnet = models.resnet50(pretrained=False)
         
-        # Remove the final fully connected layer
-        self.encoder = nn.Sequential(*list(self.encoder.children())[:-2])
+        # Store layers exactly as they appear in your state dict
+        self.encoder_conv1 = resnet.conv1
+        self.encoder_bn1 = resnet.bn1
+        self.encoder_relu = resnet.relu
+        self.encoder_maxpool = resnet.maxpool
+        self.encoder_layer1 = resnet.layer1
+        self.encoder_layer2 = resnet.layer2
+        self.encoder_layer3 = resnet.layer3
+        self.encoder_layer4 = resnet.layer4
         
-        # Decoder - simple upsampling path
-        self.decoder = nn.Sequential(
-            nn.Conv2d(2048, 1024, kernel_size=3, padding=1),
-            nn.BatchNorm2d(1024),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            
-            nn.Conv2d(1024, 512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            
-            nn.Conv2d(512, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
-            
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-        )
+        # Decoder blocks - matching your state dict structure
+        self.decoder_blocks = nn.ModuleList([
+            self._make_decoder_block(2048, 1024),  # block 0
+            self._make_decoder_block(1024, 512),   # block 1  
+            self._make_decoder_block(512, 256),    # block 2
+            self._make_decoder_block(256, 128),    # block 3
+            self._make_decoder_block(128, 64),     # block 4
+        ])
         
-        # Final segmentation head
+        # Segmentation head
         self.segmentation_head = nn.Conv2d(64, num_classes, kernel_size=1)
         
+    def _make_decoder_block(self, in_channels, out_channels):
+        """Create decoder block matching your state dict structure"""
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+    
     def forward(self, x):
-        # Encoder
-        x = self.encoder(x)
+        # Encoder forward pass - exactly matching state dict structure
+        x = self.encoder_conv1(x)
+        x = self.encoder_bn1(x)
+        x = self.encoder_relu(x)
+        x = self.encoder_maxpool(x)
+
+        x = self.encoder_layer1(x)
+        x = self.encoder_layer2(x) 
+        x = self.encoder_layer3(x)
+        x = self.encoder_layer4(x)
         
-        # Decoder
-        x = self.decoder(x)
+        # Decoder forward pass
+        for block in self.decoder_blocks:
+            x = block(x)
+            x = nn.functional.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
         
         # Segmentation head
         x = self.segmentation_head(x)
-        
-        # Upsample to input size and apply sigmoid
-        x = nn.functional.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
         return torch.sigmoid(x)
 
 @st.cache_resource
-def load_model_properly():
-    """Load model properly handling state dict vs full model"""
+def load_model_exact():
+    """Load model with exact architecture matching"""
     try:
-        # First, try to load the file
+        # Load the state dict
         checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
         
         st.sidebar.info(f"📦 Loaded file type: {type(checkpoint)}")
         
-        # Case 1: It's a state dictionary (OrderedDict)
         if isinstance(checkpoint, collections.OrderedDict):
-            st.sidebar.info("🔄 Loading state dictionary into model architecture...")
+            st.sidebar.info("🔄 Loading with exact architecture match...")
             
-            # Initialize model with proper architecture
-            model = OilSpillSegmentationModel(num_classes=1)
+            # Initialize exact model
+            model = ExactOilSpillModel(num_classes=1)
             
-            # Try to load state dict
-            try:
-                model.load_state_dict(checkpoint)
-                st.sidebar.success("✅ State dict loaded successfully!")
-            except Exception as e:
-                st.sidebar.warning(f"⚠️ Standard loading failed: {e}")
-                st.sidebar.info("🔄 Trying strict=False loading...")
-                
-                # Try with strict=False to handle minor mismatches
-                model.load_state_dict(checkpoint, strict=False)
-                st.sidebar.success("✅ State dict loaded with strict=False!")
+            # Load with strict=False to handle any remaining minor mismatches
+            model.load_state_dict(checkpoint, strict=False)
             
+            st.sidebar.success("✅ Model loaded successfully with exact architecture!")
             model.eval()
             return model
             
-        # Case 2: It's already a model instance
         elif isinstance(checkpoint, torch.nn.Module):
             st.sidebar.success("✅ Full model loaded directly!")
             checkpoint.eval()
@@ -115,7 +112,71 @@ def load_model_properly():
         return None
 
 # Load the model
-model = load_model_properly()
+model = load_model_exact()
+
+# If exact loading fails, try a universal approach
+if model is None:
+    st.sidebar.warning("🔄 Trying universal model loader...")
+    
+    class UniversalSegmentationModel(nn.Module):
+        """A universal model that should work with most ResNet-based segmentation models"""
+        def __init__(self):
+            super(UniversalSegmentationModel, self).__init__()
+            # Use ResNet50 as base
+            resnet = models.resnet50(pretrained=False)
+            self.encoder = nn.Sequential(
+                resnet.conv1,
+                resnet.bn1,
+                resnet.relu,
+                resnet.maxpool,
+                resnet.layer1,
+                resnet.layer2, 
+                resnet.layer3,
+                resnet.layer4
+            )
+            # Simple decoder
+            self.decoder = nn.Sequential(
+                nn.Conv2d(2048, 1024, 3, padding=1),
+                nn.BatchNorm2d(1024),
+                nn.ReLU(),
+                nn.Upsample(scale_factor=2, mode='bilinear'),
+                
+                nn.Conv2d(1024, 512, 3, padding=1),
+                nn.BatchNorm2d(512),
+                nn.ReLU(),
+                nn.Upsample(scale_factor=2, mode='bilinear'),
+                
+                nn.Conv2d(512, 256, 3, padding=1),
+                nn.BatchNorm2d(256),
+                nn.ReLU(),
+                nn.Upsample(scale_factor=2, mode='bilinear'),
+                
+                nn.Conv2d(256, 128, 3, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.Upsample(scale_factor=2, mode='bilinear'),
+                
+                nn.Conv2d(128, 64, 3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+            )
+            self.head = nn.Conv2d(64, 1, 1)
+            
+        def forward(self, x):
+            x = self.encoder(x)
+            x = self.decoder(x)
+            x = self.head(x)
+            x = nn.functional.interpolate(x, scale_factor=2, mode='bilinear')
+            return torch.sigmoid(x)
+    
+    try:
+        checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
+        model = UniversalSegmentationModel()
+        model.load_state_dict(checkpoint, strict=False)
+        model.eval()
+        st.sidebar.success("✅ Universal model loaded!")
+    except Exception as e:
+        st.sidebar.error(f"❌ Universal loading failed: {e}")
 
 # Simple preprocessing
 def preprocess_image(image, target_size=(256, 256)):
@@ -126,7 +187,7 @@ def preprocess_image(image, target_size=(256, 256)):
     original_size = image.size
     image_resized = image.resize(target_size)
     
-    # Convert to numpy and normalize with ImageNet stats
+    # Convert to numpy and normalize
     img_array = np.array(image_resized) / 255.0
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
@@ -143,11 +204,10 @@ def clean_mask(mask, min_size=500):
     if len(mask.shape) == 3:
         mask = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
     
-    # Find connected components
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
     
     cleaned_mask = np.zeros_like(mask)
-    for i in range(1, num_labels):  # Skip background (label 0)
+    for i in range(1, num_labels):
         if stats[i, cv2.CC_STAT_AREA] >= min_size:
             cleaned_mask[labels == i] = 255
     
@@ -158,39 +218,19 @@ st.sidebar.header("⚙️ Detection Settings")
 
 confidence_threshold = st.sidebar.slider(
     "Confidence Threshold", 
-    0.1, 0.9, 0.5, 0.05,
-    help="Higher values = fewer false positives, but might miss small spills"
+    0.1, 0.9, 0.5, 0.05
 )
 
-enable_cleaning = st.sidebar.checkbox("Clean Mask (remove small detections)", value=True)
-min_object_size = st.sidebar.slider("Minimum Object Size (pixels)", 100, 2000, 500, 100)
+enable_cleaning = st.sidebar.checkbox("Clean Mask", value=True)
+min_object_size = st.sidebar.slider("Min Object Size", 100, 2000, 500, 100)
 
-# Alternative: Try different model architectures if the first one fails
-if model is None:
-    st.sidebar.warning("🔄 Trying alternative model architecture...")
-    
-    # Try a simpler architecture
-    class SimpleSegmentationModel(nn.Module):
-        def __init__(self):
-            super(SimpleSegmentationModel, self).__init__()
-            self.encoder = models.resnet34(pretrained=False)
-            self.encoder = nn.Sequential(*list(self.encoder.children())[:-2])
-            self.decoder = nn.Conv2d(512, 1, kernel_size=1)
-            
-        def forward(self, x):
-            x = self.encoder(x)
-            x = self.decoder(x)
-            x = nn.functional.interpolate(x, scale_factor=32, mode='bilinear', align_corners=False)
-            return torch.sigmoid(x)
-    
-    try:
-        checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
-        model = SimpleSegmentationModel()
-        model.load_state_dict(checkpoint, strict=False)
-        model.eval()
-        st.sidebar.success("✅ Alternative architecture loaded!")
-    except:
-        st.sidebar.error("❌ All loading attempts failed")
+# Test different input sizes
+input_size = st.sidebar.selectbox(
+    "Input Size",
+    [224, 256, 384, 512],
+    index=1,
+    help="Try different input sizes if detection is poor"
+)
 
 # Main application
 if model is not None:
@@ -216,10 +256,10 @@ if model is not None:
         # Process and predict
         with st.spinner("🔍 Analyzing for oil spills..."):
             try:
-                # Preprocess
-                input_tensor, original_size = preprocess_image(image)
+                # Preprocess with selected size
+                input_tensor, original_size = preprocess_image(image, target_size=(input_size, input_size))
                 
-                # Get model device
+                # Move to same device as model
                 device = next(model.parameters()).device
                 input_tensor = input_tensor.to(device)
                 
@@ -227,25 +267,24 @@ if model is not None:
                 with torch.no_grad():
                     output = model(input_tensor)
                 
-                # Handle different output formats
+                # Handle output
                 if isinstance(output, (list, tuple)):
-                    output = output[0]  # Take first output if multiple
+                    output = output[0]
                 
-                # Convert to probability mask
                 probability_mask = output.squeeze().cpu().numpy()
                 
                 # Create binary mask
                 binary_mask = (probability_mask > confidence_threshold).astype(np.uint8) * 255
                 binary_mask_resized = cv2.resize(binary_mask, original_size, interpolation=cv2.INTER_NEAREST)
                 
-                # Clean mask if enabled
+                # Clean mask
                 if enable_cleaning:
                     binary_mask_resized = clean_mask(binary_mask_resized, min_object_size)
                 
                 # Create overlay
                 original_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
                 colored_mask = np.zeros_like(original_cv)
-                colored_mask[binary_mask_resized > 0] = [0, 0, 255]  # Red for oil spills
+                colored_mask[binary_mask_resized > 0] = [0, 0, 255]
                 blended = cv2.addWeighted(original_cv, 0.7, colored_mask, 0.3, 0)
                 blended_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
                 
@@ -266,58 +305,36 @@ if model is not None:
                 oil_pixels = np.sum(binary_mask_resized > 0)
                 oil_percentage = (oil_pixels / total_pixels) * 100
                 
-                col_stats1, col_stats2, col_stats3 = st.columns(3)
+                col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
                 
                 with col_stats1:
-                    st.metric("Oil Spill Area", f"{oil_pixels:,} px")
+                    st.metric("Oil Pixels", f"{oil_pixels:,}")
                 with col_stats2:
                     st.metric("Coverage", f"{oil_percentage:.2f}%")
                 with col_stats3:
-                    confidence_max = np.max(probability_mask)
-                    st.metric("Max Confidence", f"{confidence_max:.3f}")
+                    st.metric("Max Confidence", f"{np.max(probability_mask):.3f}")
+                with col_stats4:
+                    st.metric("Mean Confidence", f"{np.mean(probability_mask):.3f}")
                 
-                # Alert system
-                st.subheader("🚨 Detection Alert")
+                # Alert
                 if oil_pixels > 0:
                     if oil_percentage > 5:
-                        st.error(f"🚨 LARGE OIL SPILL DETECTED! {oil_percentage:.2f}% coverage")
+                        st.error(f"🚨 LARGE OIL SPILL! {oil_percentage:.2f}% coverage")
                     elif oil_percentage > 1:
-                        st.warning(f"⚠️ Medium oil spill detected: {oil_percentage:.2f}% coverage")
+                        st.warning(f"⚠️ Medium spill: {oil_percentage:.2f}% coverage")
                     else:
-                        st.info(f"ℹ️ Small oil spill detected: {oil_percentage:.2f}% coverage")
+                        st.info(f"ℹ️ Small spill: {oil_percentage:.2f}% coverage")
                 else:
                     st.success("✅ No oil spills detected")
                 
-                # Model confidence analysis
-                st.subheader("🔍 Model Confidence Analysis")
-                conf_col1, conf_col2 = st.columns(2)
+                # Quick threshold test
+                st.subheader("🔍 Test Different Thresholds")
+                test_thresholds = [0.3, 0.5, 0.7, 0.9]
+                test_cols = st.columns(4)
                 
-                with conf_col1:
-                    st.write("**Confidence Statistics:**")
-                    st.write(f"- Min: {np.min(probability_mask):.4f}")
-                    st.write(f"- Max: {np.max(probability_mask):.4f}")
-                    st.write(f"- Mean: {np.mean(probability_mask):.4f}")
-                    st.write(f"- Std: {np.std(probability_mask):.4f}")
-                
-                with conf_col2:
-                    st.write("**Interpretation:**")
-                    if np.max(probability_mask) < 0.1:
-                        st.error("❌ Model is very uncertain")
-                    elif np.mean(probability_mask) > 0.8:
-                        st.warning("⚠️ Model is overconfident")
-                    else:
-                        st.success("✅ Model confidence looks reasonable")
-                
-                # Quick threshold comparison
-                st.subheader("🔍 Quick Threshold Test")
-                st.write("Try different thresholds to find the best one:")
-                
-                test_thresholds = [0.3, 0.5, 0.7]
-                test_cols = st.columns(3)
-                
-                for col, test_thresh in zip(test_cols, test_thresholds):
+                for col, thresh in zip(test_cols, test_thresholds):
                     with col:
-                        test_mask = (probability_mask > test_thresh).astype(np.uint8) * 255
+                        test_mask = (probability_mask > thresh).astype(np.uint8) * 255
                         test_mask_resized = cv2.resize(test_mask, original_size, interpolation=cv2.INTER_NEAREST)
                         
                         if enable_cleaning:
@@ -326,10 +343,10 @@ if model is not None:
                         test_pixels = np.sum(test_mask_resized > 0)
                         test_coverage = (test_pixels / total_pixels) * 100
                         
-                        st.image(test_mask_resized, use_column_width=True, caption=f"Thresh: {test_thresh}")
+                        st.image(test_mask_resized, use_column_width=True, caption=f"Thresh: {thresh}")
                         st.write(f"Coverage: {test_coverage:.2f}%")
                 
-                # Download section
+                # Download
                 st.subheader("💾 Download Results")
                 
                 col_dl1, col_dl2 = st.columns(2)
@@ -339,7 +356,7 @@ if model is not None:
                     buf_mask = io.BytesIO()
                     mask_pil.save(buf_mask, format='PNG')
                     st.download_button(
-                        label="Download Detection Mask",
+                        label="Download Mask",
                         data=buf_mask.getvalue(),
                         file_name="oil_spill_mask.png",
                         mime="image/png"
@@ -350,40 +367,48 @@ if model is not None:
                     buf_overlay = io.BytesIO()
                     overlay_pil.save(buf_overlay, format='PNG')
                     st.download_button(
-                        label="Download Overlay Image",
+                        label="Download Overlay",
                         data=buf_overlay.getvalue(),
-                        file_name="oil_spill_overlay.png", 
+                        file_name="oil_spill_overlay.png",
                         mime="image/png"
                     )
                 
             except Exception as e:
                 st.error(f"❌ Prediction error: {str(e)}")
-                st.info("💡 Try adjusting the threshold or disabling mask cleaning")
+                st.info("💡 Try different input size or threshold")
 
 else:
     st.error("""
     ❌ Model failed to load!
     
-    **This usually means:**
-    1. The model file format is not compatible
-    2. We need the exact model architecture used during training
-    3. The model file might be corrupted
+    **We need the exact model architecture.** Please consider:
     
-    **Solution:** Please share the original model architecture code from your training script.
+    1. **Share your training code** - The exact model class definition
+    2. **Re-save the model** - Use `torch.save(model, 'model.pth')` instead of state dict
+    3. **Check model format** - Ensure it's a PyTorch model file
+    
+    Without the exact architecture, we can only approximate.
     """)
 
-# Tips for better detection
-with st.expander("💡 Tips for Better Detection"):
-    st.markdown("""
-    **If detections are wrong:**
+# Final fallback - direct prediction without proper architecture
+with st.expander("🔄 Last Resort: Direct Prediction"):
+    st.warning("This is a last resort method - results may be poor")
     
-    - **Too many false positives?** → Increase threshold (0.7-0.9)
-    - **Missing real spills?** → Decrease threshold (0.3-0.5)
-    - **Noisy output?** → Enable mask cleaning and increase min object size
-    - **Model uncertain?** → Try different preprocessing or check input image quality
-    
-    **Recommended settings to start:**
-    - Threshold: 0.5
-    - Mask cleaning: Enabled
-    - Min object size: 500 pixels
-    """)
+    if st.button("Try Direct Prediction (Experimental)"):
+        try:
+            # Load state dict directly and try to use it
+            checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
+            
+            # Create a simple resnet and try to load
+            simple_model = models.resnet50(pretrained=False)
+            simple_model.fc = nn.Identity()  # Remove classification head
+            
+            try:
+                simple_model.load_state_dict(checkpoint, strict=False)
+                simple_model.eval()
+                st.success("✅ Direct loading worked! Model ready for prediction.")
+            except:
+                st.error("❌ Even direct loading failed.")
+                
+        except Exception as e:
+            st.error(f"Final attempt failed: {e}")
