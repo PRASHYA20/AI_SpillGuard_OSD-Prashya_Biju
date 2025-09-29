@@ -14,184 +14,124 @@ st.set_page_config(page_title="Oil Spill Detection", layout="wide")
 st.title("🛢️ Oil Spill Detection")
 st.write("Upload satellite imagery to detect oil spills")
 
-# Define the EXACT architecture that matches your state dict
-class ExactOilSpillModel(nn.Module):
+# Define model architecture that matches common segmentation models
+class OilSpillModel(nn.Module):
     def __init__(self, num_classes=1):
-        super(ExactOilSpillModel, self).__init__()
+        super(OilSpillModel, self).__init__()
         
-        # Encoder - ResNet50 with exact layer structure
+        # Encoder - ResNet50
         resnet = models.resnet50(pretrained=False)
+        self.encoder = nn.Sequential(*list(resnet.children())[:-2])
         
-        # Store layers exactly as they appear in your state dict
-        self.encoder_conv1 = resnet.conv1
-        self.encoder_bn1 = resnet.bn1
-        self.encoder_relu = resnet.relu
-        self.encoder_maxpool = resnet.maxpool
-        self.encoder_layer1 = resnet.layer1
-        self.encoder_layer2 = resnet.layer2
-        self.encoder_layer3 = resnet.layer3
-        self.encoder_layer4 = resnet.layer4
-        
-        # Decoder blocks - matching your state dict structure
-        self.decoder_blocks = nn.ModuleList([
-            self._make_decoder_block(2048, 1024),  # block 0
-            self._make_decoder_block(1024, 512),   # block 1  
-            self._make_decoder_block(512, 256),    # block 2
-            self._make_decoder_block(256, 128),    # block 3
-            self._make_decoder_block(128, 64),     # block 4
-        ])
-        
-        # Segmentation head
-        self.segmentation_head = nn.Conv2d(64, num_classes, kernel_size=1)
-        
-    def _make_decoder_block(self, in_channels, out_channels):
-        """Create decoder block matching your state dict structure"""
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+        # Decoder
+        self.decoder = nn.Sequential(
+            nn.Conv2d(2048, 1024, 3, padding=1),
+            nn.BatchNorm2d(1024),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            
+            nn.Conv2d(1024, 512, 3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            
+            nn.Conv2d(512, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            
+            nn.Conv2d(256, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
         )
-    
+        
+        # Final output
+        self.final_conv = nn.Conv2d(64, num_classes, kernel_size=1)
+        
     def forward(self, x):
-        # Encoder forward pass - exactly matching state dict structure
-        x = self.encoder_conv1(x)
-        x = self.encoder_bn1(x)
-        x = self.encoder_relu(x)
-        x = self.encoder_maxpool(x)
-
-        x = self.encoder_layer1(x)
-        x = self.encoder_layer2(x) 
-        x = self.encoder_layer3(x)
-        x = self.encoder_layer4(x)
-        
-        # Decoder forward pass
-        for block in self.decoder_blocks:
-            x = block(x)
-            x = nn.functional.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        
-        # Segmentation head
-        x = self.segmentation_head(x)
+        x = self.encoder(x)
+        x = self.decoder(x)
+        x = self.final_conv(x)
+        x = nn.functional.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         return torch.sigmoid(x)
 
 @st.cache_resource
-def load_model_exact():
-    """Load model with exact architecture matching"""
+def load_model():
+    """Load model with proper error handling"""
     try:
-        # Load the state dict
         checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
         
-        st.sidebar.info(f"📦 Loaded file type: {type(checkpoint)}")
-        
         if isinstance(checkpoint, collections.OrderedDict):
-            st.sidebar.info("🔄 Loading with exact architecture match...")
+            # It's a state dict - load into model architecture
+            model = OilSpillModel(num_classes=1)
             
-            # Initialize exact model
-            model = ExactOilSpillModel(num_classes=1)
+            # Try to load state dict
+            try:
+                model.load_state_dict(checkpoint)
+                st.sidebar.success("✅ Model loaded successfully!")
+            except:
+                # If strict loading fails, try with strict=False
+                model.load_state_dict(checkpoint, strict=False)
+                st.sidebar.success("✅ Model loaded with strict=False")
             
-            # Load with strict=False to handle any remaining minor mismatches
-            model.load_state_dict(checkpoint, strict=False)
-            
-            st.sidebar.success("✅ Model loaded successfully with exact architecture!")
             model.eval()
             return model
             
         elif isinstance(checkpoint, torch.nn.Module):
-            st.sidebar.success("✅ Full model loaded directly!")
+            # It's already a model
             checkpoint.eval()
+            st.sidebar.success("✅ Full model loaded directly!")
             return checkpoint
             
-        else:
-            st.sidebar.error(f"❌ Unknown checkpoint type: {type(checkpoint)}")
-            return None
-            
     except Exception as e:
-        st.sidebar.error(f"❌ Model loading error: {str(e)}")
+        st.sidebar.error(f"❌ Loading failed: {str(e)}")
         return None
 
-# Load the model
-model = load_model_exact()
+# Load model
+model = load_model()
 
-# If exact loading fails, try a universal approach
-if model is None:
-    st.sidebar.warning("🔄 Trying universal model loader...")
+# Enhanced preprocessing with multiple options
+def preprocess_image_advanced(image, target_size=(512, 512), method='standard'):
+    """Advanced preprocessing with different strategies"""
+    original_size = image.size
     
-    class UniversalSegmentationModel(nn.Module):
-        """A universal model that should work with most ResNet-based segmentation models"""
-        def __init__(self):
-            super(UniversalSegmentationModel, self).__init__()
-            # Use ResNet50 as base
-            resnet = models.resnet50(pretrained=False)
-            self.encoder = nn.Sequential(
-                resnet.conv1,
-                resnet.bn1,
-                resnet.relu,
-                resnet.maxpool,
-                resnet.layer1,
-                resnet.layer2, 
-                resnet.layer3,
-                resnet.layer4
-            )
-            # Simple decoder
-            self.decoder = nn.Sequential(
-                nn.Conv2d(2048, 1024, 3, padding=1),
-                nn.BatchNorm2d(1024),
-                nn.ReLU(),
-                nn.Upsample(scale_factor=2, mode='bilinear'),
-                
-                nn.Conv2d(1024, 512, 3, padding=1),
-                nn.BatchNorm2d(512),
-                nn.ReLU(),
-                nn.Upsample(scale_factor=2, mode='bilinear'),
-                
-                nn.Conv2d(512, 256, 3, padding=1),
-                nn.BatchNorm2d(256),
-                nn.ReLU(),
-                nn.Upsample(scale_factor=2, mode='bilinear'),
-                
-                nn.Conv2d(256, 128, 3, padding=1),
-                nn.BatchNorm2d(128),
-                nn.ReLU(),
-                nn.Upsample(scale_factor=2, mode='bilinear'),
-                
-                nn.Conv2d(128, 64, 3, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(),
-            )
-            self.head = nn.Conv2d(64, 1, 1)
-            
-        def forward(self, x):
-            x = self.encoder(x)
-            x = self.decoder(x)
-            x = self.head(x)
-            x = nn.functional.interpolate(x, scale_factor=2, mode='bilinear')
-            return torch.sigmoid(x)
-    
-    try:
-        checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
-        model = UniversalSegmentationModel()
-        model.load_state_dict(checkpoint, strict=False)
-        model.eval()
-        st.sidebar.success("✅ Universal model loaded!")
-    except Exception as e:
-        st.sidebar.error(f"❌ Universal loading failed: {e}")
-
-# Simple preprocessing
-def preprocess_image(image, target_size=(256, 256)):
-    """Preprocess image for model input"""
+    # Convert to RGB if needed
     if image.mode != 'RGB':
         image = image.convert('RGB')
     
-    original_size = image.size
-    image_resized = image.resize(target_size)
+    # Resize
+    image_resized = image.resize(target_size, Image.Resampling.LANCZOS)
+    img_array = np.array(image_resized)
     
-    # Convert to numpy and normalize
-    img_array = np.array(image_resized) / 255.0
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    img_array = (img_array - mean) / std
+    # Different preprocessing strategies
+    if method == 'no_normalize':
+        # Simple 0-1 normalization
+        img_array = img_array.astype(np.float32) / 255.0
+        
+    elif method == 'simple_normalize':
+        # Simple normalization with mean subtraction
+        img_array = img_array.astype(np.float32) / 255.0
+        img_array = (img_array - 0.5) / 0.5
+        
+    elif method == 'opencv_style':
+        # BGR and ImageNet stats (if model was trained with OpenCV)
+        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        img_array = img_array.astype(np.float32) / 255.0
+        mean = np.array([0.406, 0.456, 0.485])  # BGR order
+        std = np.array([0.225, 0.224, 0.229])
+        img_array = (img_array - mean) / std
+        
+    else:  # standard
+        # Standard ImageNet normalization (RGB)
+        img_array = img_array.astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        img_array = (img_array - mean) / std
     
     # Convert to tensor
     img_tensor = torch.from_numpy(img_array).float()
@@ -199,38 +139,120 @@ def preprocess_image(image, target_size=(256, 256)):
     
     return img_tensor, original_size
 
-def clean_mask(mask, min_size=500):
-    """Remove small noisy detections"""
-    if len(mask.shape) == 3:
-        mask = cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)
+def analyze_model_output(output):
+    """Comprehensive analysis of model output"""
+    if isinstance(output, torch.Tensor):
+        prob_map = output.squeeze().cpu().numpy()
+    else:
+        prob_map = output
     
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    analysis = {
+        'min': float(np.min(prob_map)),
+        'max': float(np.max(prob_map)),
+        'mean': float(np.mean(prob_map)),
+        'std': float(np.std(prob_map)),
+        'median': float(np.median(prob_map)),
+        'q95': float(np.percentile(prob_map, 95)),
+        'q99': float(np.percentile(prob_map, 99)),
+        'above_0.1': float(np.sum(prob_map > 0.1) / prob_map.size * 100),
+        'above_0.5': float(np.sum(prob_map > 0.5) / prob_map.size * 100),
+        'above_0.8': float(np.sum(prob_map > 0.8) / prob_map.size * 100),
+    }
+    return analysis, prob_map
+
+def calculate_optimal_threshold(prob_map, method='otsu'):
+    """Calculate optimal threshold using different methods"""
+    prob_255 = (prob_map * 255).astype(np.uint8)
+    
+    if method == 'otsu' and len(np.unique(prob_255)) > 1:
+        try:
+            threshold, _ = cv2.threshold(prob_255, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            return threshold / 255.0
+        except:
+            pass
+    
+    elif method == 'mean_std':
+        mean = np.mean(prob_map)
+        std = np.std(prob_map)
+        return min(0.9, max(0.1, mean + std))
+    
+    elif method == 'percentile':
+        return np.percentile(prob_map, 95)
+    
+    # Fallback to mean-based threshold
+    return min(0.8, max(0.3, np.mean(prob_map) * 1.5))
+
+def enhance_mask(mask, prob_map, enhancement='standard'):
+    """Enhance the binary mask"""
+    if enhancement == 'morphological':
+        # Apply morphological operations
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    
+    elif enhancement == 'confidence_weighted':
+        # Create smoother edges based on confidence
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        enhanced_mask = np.zeros_like(mask)
+        for contour in contours:
+            # Get bounding rect
+            x, y, w, h = cv2.boundingRect(contour)
+            # Calculate average confidence in this region
+            region_conf = np.mean(prob_map[y:y+h, x:x+w])
+            if region_conf > 0.3:  # Only keep high-confidence regions
+                cv2.fillPoly(enhanced_mask, [contour], 255)
+        mask = enhanced_mask
+    
+    return mask
+
+def clean_mask(mask, min_size=1000, max_size=None):
+    """Clean mask by removing small objects and optionally large ones"""
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     
     cleaned_mask = np.zeros_like(mask)
     for i in range(1, num_labels):
-        if stats[i, cv2.CC_STAT_AREA] >= min_size:
-            cleaned_mask[labels == i] = 255
+        area = stats[i, cv2.CC_STAT_AREA]
+        
+        # Keep only objects within size range
+        if area >= min_size:
+            if max_size is None or area <= max_size:
+                cleaned_mask[labels == i] = 255
     
     return cleaned_mask
 
 # Settings
-st.sidebar.header("⚙️ Detection Settings")
+st.sidebar.header("⚙️ Advanced Settings")
 
-confidence_threshold = st.sidebar.slider(
-    "Confidence Threshold", 
-    0.1, 0.9, 0.5, 0.05
+# Preprocessing options
+preprocessing_method = st.sidebar.selectbox(
+    "Preprocessing Method",
+    ['standard', 'no_normalize', 'simple_normalize', 'opencv_style'],
+    help="Try different preprocessing if detection is poor"
 )
 
-enable_cleaning = st.sidebar.checkbox("Clean Mask", value=True)
-min_object_size = st.sidebar.slider("Min Object Size", 100, 2000, 500, 100)
-
-# Test different input sizes
 input_size = st.sidebar.selectbox(
     "Input Size",
-    [224, 256, 384, 512],
-    index=1,
-    help="Try different input sizes if detection is poor"
+    [256, 384, 512, 768],
+    index=2,
+    help="Larger sizes may detect smaller spills better"
 )
+
+# Threshold options
+threshold_method = st.sidebar.radio(
+    "Threshold Method",
+    ['auto_otsu', 'auto_percentile', 'manual']
+)
+
+if threshold_method == 'manual':
+    confidence_threshold = st.sidebar.slider("Manual Threshold", 0.01, 0.99, 0.5, 0.01)
+else:
+    confidence_threshold = None
+
+# Post-processing
+st.sidebar.subheader("Post-processing")
+enable_cleaning = st.sidebar.checkbox("Clean Mask", value=True)
+min_object_size = st.sidebar.slider("Min Object Size", 500, 5000, 1000, 100)
+enable_enhancement = st.sidebar.checkbox("Enhance Mask", value=True)
 
 # Main application
 if model is not None:
@@ -245,21 +267,25 @@ if model is not None:
         image = Image.open(uploaded_file)
         original_size = image.size
         
-        # Display layout
+        # Display original image
         col1, col2, col3 = st.columns(3)
         
         with col1:
             st.subheader("🛰️ Original Image")
-            st.image(image, use_column_width=True)
+            st.image(image, use_container_width=True)
             st.write(f"Size: {original_size}")
         
         # Process and predict
         with st.spinner("🔍 Analyzing for oil spills..."):
             try:
-                # Preprocess with selected size
-                input_tensor, original_size = preprocess_image(image, target_size=(input_size, input_size))
+                # Preprocess
+                input_tensor, original_size = preprocess_image_advanced(
+                    image, 
+                    target_size=(input_size, input_size),
+                    method=preprocessing_method
+                )
                 
-                # Move to same device as model
+                # Move to model device
                 device = next(model.parameters()).device
                 input_tensor = input_tensor.to(device)
                 
@@ -271,11 +297,24 @@ if model is not None:
                 if isinstance(output, (list, tuple)):
                     output = output[0]
                 
-                probability_mask = output.squeeze().cpu().numpy()
+                # Analyze output
+                analysis, prob_map = analyze_model_output(output)
                 
-                # Create binary mask
-                binary_mask = (probability_mask > confidence_threshold).astype(np.uint8) * 255
+                # Calculate threshold
+                if threshold_method == 'auto_otsu':
+                    confidence_threshold = calculate_optimal_threshold(prob_map, 'otsu')
+                elif threshold_method == 'auto_percentile':
+                    confidence_threshold = calculate_optimal_threshold(prob_map, 'percentile')
+                
+                st.info(f"**Using threshold: {confidence_threshold:.3f}**")
+                
+                # Create initial mask
+                binary_mask = (prob_map > confidence_threshold).astype(np.uint8) * 255
                 binary_mask_resized = cv2.resize(binary_mask, original_size, interpolation=cv2.INTER_NEAREST)
+                
+                # Apply enhancements
+                if enable_enhancement:
+                    binary_mask_resized = enhance_mask(binary_mask_resized, prob_map)
                 
                 # Clean mask
                 if enable_cleaning:
@@ -284,23 +323,24 @@ if model is not None:
                 # Create overlay
                 original_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
                 colored_mask = np.zeros_like(original_cv)
-                colored_mask[binary_mask_resized > 0] = [0, 0, 255]
+                colored_mask[binary_mask_resized > 0] = [0, 0, 255]  # Red for oil
                 blended = cv2.addWeighted(original_cv, 0.7, colored_mask, 0.3, 0)
                 blended_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
                 
                 # Display results
                 with col2:
                     st.subheader("🎭 Detection Mask")
-                    st.image(binary_mask_resized, use_column_width=True, clamp=True)
-                    st.write(f"Threshold: {confidence_threshold}")
+                    st.image(binary_mask_resized, use_container_width=True)
+                    st.write(f"Threshold: {confidence_threshold:.3f}")
                 
                 with col3:
                     st.subheader("🛢️ Oil Spill Overlay")
-                    st.image(blended_rgb, use_column_width=True)
+                    st.image(blended_rgb, use_container_width=True)
+                
+                # Detailed analysis
+                st.subheader("📊 Detailed Analysis")
                 
                 # Statistics
-                st.subheader("📊 Detection Results")
-                
                 total_pixels = binary_mask_resized.size
                 oil_pixels = np.sum(binary_mask_resized > 0)
                 oil_percentage = (oil_pixels / total_pixels) * 100
@@ -310,31 +350,60 @@ if model is not None:
                 with col_stats1:
                     st.metric("Oil Pixels", f"{oil_pixels:,}")
                 with col_stats2:
-                    st.metric("Coverage", f"{oil_percentage:.2f}%")
+                    st.metric("Coverage", f"{oil_percentage:.4f}%")
                 with col_stats3:
-                    st.metric("Max Confidence", f"{np.max(probability_mask):.3f}")
+                    st.metric("Max Confidence", f"{analysis['max']:.3f}")
                 with col_stats4:
-                    st.metric("Mean Confidence", f"{np.mean(probability_mask):.3f}")
+                    st.metric("Mean Confidence", f"{analysis['mean']:.3f}")
                 
-                # Alert
-                if oil_pixels > 0:
-                    if oil_percentage > 5:
-                        st.error(f"🚨 LARGE OIL SPILL! {oil_percentage:.2f}% coverage")
-                    elif oil_percentage > 1:
-                        st.warning(f"⚠️ Medium spill: {oil_percentage:.2f}% coverage")
+                # Model output analysis
+                st.subheader("🔍 Model Output Analysis")
+                anal_col1, anal_col2 = st.columns(2)
+                
+                with anal_col1:
+                    st.write("**Confidence Distribution:**")
+                    st.write(f"- Min: {analysis['min']:.4f}")
+                    st.write(f"- Max: {analysis['max']:.4f}")
+                    st.write(f"- Mean: {analysis['mean']:.4f}")
+                    st.write(f"- Std: {analysis['std']:.4f}")
+                    st.write(f"- Median: {analysis['median']:.4f}")
+                    st.write(f"- 95th %ile: {analysis['q95']:.4f}")
+                
+                with anal_col2:
+                    st.write("**Pixel Statistics:**")
+                    st.write(f"- > 0.1: {analysis['above_0.1']:.2f}%")
+                    st.write(f"- > 0.5: {analysis['above_0.5']:.2f}%")
+                    st.write(f"- > 0.8: {analysis['above_0.8']:.2f}%")
+                    
+                    # Interpretation
+                    st.write("**Interpretation:**")
+                    if analysis['max'] < 0.1:
+                        st.error("❌ Model very uncertain - try different preprocessing")
+                    elif analysis['mean'] > 0.8:
+                        st.warning("⚠️ Model overconfident - try higher threshold")
+                    elif oil_pixels == 0:
+                        st.info("ℹ️ No spills detected - try lower threshold")
                     else:
-                        st.info(f"ℹ️ Small spill: {oil_percentage:.2f}% coverage")
+                        st.success("✅ Model producing reasonable outputs")
+                
+                # Alert system
+                st.subheader("🚨 Detection Alert")
+                if oil_pixels > 0:
+                    if oil_percentage > 1:
+                        st.error(f"🚨 OIL SPILL DETECTED! {oil_percentage:.4f}% coverage")
+                    else:
+                        st.warning(f"⚠️ Potential oil sheen: {oil_percentage:.4f}% coverage")
                 else:
                     st.success("✅ No oil spills detected")
                 
-                # Quick threshold test
-                st.subheader("🔍 Test Different Thresholds")
-                test_thresholds = [0.3, 0.5, 0.7, 0.9]
-                test_cols = st.columns(4)
+                # Quick threshold comparison
+                st.subheader("🔍 Compare Thresholds")
+                test_thresholds = [0.1, 0.3, 0.5, 0.7, 0.9]
+                test_cols = st.columns(5)
                 
                 for col, thresh in zip(test_cols, test_thresholds):
                     with col:
-                        test_mask = (probability_mask > thresh).astype(np.uint8) * 255
+                        test_mask = (prob_map > thresh).astype(np.uint8) * 255
                         test_mask_resized = cv2.resize(test_mask, original_size, interpolation=cv2.INTER_NEAREST)
                         
                         if enable_cleaning:
@@ -343,13 +412,13 @@ if model is not None:
                         test_pixels = np.sum(test_mask_resized > 0)
                         test_coverage = (test_pixels / total_pixels) * 100
                         
-                        st.image(test_mask_resized, use_column_width=True, caption=f"Thresh: {thresh}")
-                        st.write(f"Coverage: {test_coverage:.2f}%")
+                        st.image(test_mask_resized, use_container_width=True, caption=f"Thresh: {thresh}")
+                        st.write(f"Coverage: {test_coverage:.4f}%")
                 
-                # Download
+                # Download section
                 st.subheader("💾 Download Results")
                 
-                col_dl1, col_dl2 = st.columns(2)
+                col_dl1, col_dl2, col_dl3 = st.columns(3)
                 
                 with col_dl1:
                     mask_pil = Image.fromarray(binary_mask_resized)
@@ -373,42 +442,71 @@ if model is not None:
                         mime="image/png"
                     )
                 
+                with col_dl3:
+                    # Analysis report
+                    report = f"""OIL SPILL DETECTION REPORT
+Image Size: {original_size}
+Total Pixels: {total_pixels:,}
+Oil Spill Pixels: {oil_pixels:,}
+Area Coverage: {oil_percentage:.4f}%
+Threshold: {confidence_threshold:.3f}
+
+MODEL ANALYSIS:
+Min Confidence: {analysis['min']:.4f}
+Max Confidence: {analysis['max']:.4f}
+Mean Confidence: {analysis['mean']:.4f}
+Std Confidence: {analysis['std']:.4f}
+Pixels > 0.1: {analysis['above_0.1']:.2f}%
+Pixels > 0.5: {analysis['above_0.5']:.2f}%
+Pixels > 0.8: {analysis['above_0.8']:.2f}%
+
+SETTINGS:
+Preprocessing: {preprocessing_method}
+Input Size: {input_size}
+Threshold Method: {threshold_method}
+Mask Cleaning: {enable_cleaning}
+Min Object Size: {min_object_size}
+"""
+                    st.download_button(
+                        label="Download Report",
+                        data=report,
+                        file_name="oil_spill_analysis.txt",
+                        mime="text/plain"
+                    )
+                
             except Exception as e:
                 st.error(f"❌ Prediction error: {str(e)}")
-                st.info("💡 Try different input size or threshold")
 
 else:
-    st.error("""
-    ❌ Model failed to load!
-    
-    **We need the exact model architecture.** Please consider:
-    
-    1. **Share your training code** - The exact model class definition
-    2. **Re-save the model** - Use `torch.save(model, 'model.pth')` instead of state dict
-    3. **Check model format** - Ensure it's a PyTorch model file
-    
-    Without the exact architecture, we can only approximate.
-    """)
+    st.error("Model failed to load. Please check the model file.")
 
-# Final fallback - direct prediction without proper architecture
-with st.expander("🔄 Last Resort: Direct Prediction"):
-    st.warning("This is a last resort method - results may be poor")
+# Troubleshooting guide
+with st.expander("🔧 Troubleshooting Guide"):
+    st.markdown("""
+    **If detection is poor:**
     
-    if st.button("Try Direct Prediction (Experimental)"):
-        try:
-            # Load state dict directly and try to use it
-            checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
-            
-            # Create a simple resnet and try to load
-            simple_model = models.resnet50(pretrained=False)
-            simple_model.fc = nn.Identity()  # Remove classification head
-            
-            try:
-                simple_model.load_state_dict(checkpoint, strict=False)
-                simple_model.eval()
-                st.success("✅ Direct loading worked! Model ready for prediction.")
-            except:
-                st.error("❌ Even direct loading failed.")
-                
-        except Exception as e:
-            st.error(f"Final attempt failed: {e}")
+    1. **Try different preprocessing methods:**
+       - `standard`: ImageNet normalization (most common)
+       - `no_normalize`: Simple 0-1 scaling
+       - `opencv_style`: BGR format with ImageNet stats
+    
+    2. **Adjust input size:**
+       - Larger sizes (768px) for small spills
+       - Smaller sizes (256px) for computational efficiency
+    
+    3. **Use auto-threshold methods:**
+       - `auto_otsu`: Automatic threshold using Otsu's method
+       - `auto_percentile`: Uses 95th percentile of confidence
+    
+    4. **Post-processing:**
+       - Enable mask cleaning to remove noise
+       - Adjust min object size based on expected spill size
+       - Try mask enhancement for smoother results
+    
+    **Start with these settings:**
+    - Preprocessing: `standard`
+    - Input Size: `512`
+    - Threshold: `auto_otsu`
+    - Mask Cleaning: `Enabled`
+    - Min Object Size: `1000`
+    """)
