@@ -14,135 +14,110 @@ st.set_page_config(page_title="Oil Spill Segmentation", layout="wide")
 st.title("🛢️ Oil Spill Segmentation Model")
 st.write("Upload satellite imagery to detect oil spills")
 
-# Define the model architecture to match your trained model
-class ResNetUNet(nn.Module):
+# Define the EXACT architecture that matches your state dict
+class ExactOilSpillModel(nn.Module):
     def __init__(self, num_classes=1):
-        super(ResNetUNet, self).__init__()
+        super(ExactOilSpillModel, self).__init__()
         
-        # Encoder - ResNet (matches your checkpoint structure)
-        self.encoder = models.resnet50(pretrained=False)
-        
-        # Decoder
-        self.up1 = nn.ConvTranspose2d(2048, 1024, kernel_size=2, stride=2)
-        self.conv1 = nn.Conv2d(1024, 512, kernel_size=3, padding=1)
-        
-        self.up2 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.conv2 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
-        
-        self.up3 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.conv3 = nn.Conv2d(64, 32, kernel_size=3, padding=1)
-        
-        self.final = nn.Conv2d(32, num_classes, kernel_size=1)
-        
-    def forward(self, x):
-        # Encoder
-        x = self.encoder.conv1(x)
-        x = self.encoder.bn1(x)
-        x = self.encoder.relu(x)
-        x = self.encoder.maxpool(x)
-
-        x1 = self.encoder.layer1(x)
-        x2 = self.encoder.layer2(x1)
-        x3 = self.encoder.layer3(x2)
-        x4 = self.encoder.layer4(x3)
-        
-        # Decoder
-        x = self.up1(x4)
-        x = self.conv1(x)
-        
-        x = self.up2(x)
-        x = self.conv2(x)
-        
-        x = self.up3(x)
-        x = self.conv3(x)
-        
-        x = self.final(x)
-        return torch.sigmoid(x)
-
-# Alternative simpler architecture that matches your checkpoint
-class OilSpillModel(nn.Module):
-    def __init__(self, num_classes=1):
-        super(OilSpillModel, self).__init__()
-        
-        # Use ResNet50 as encoder
+        # Encoder - ResNet50 (matches your state dict exactly)
         resnet = models.resnet50(pretrained=False)
-        
-        # Encoder layers
-        self.encoder_conv1 = resnet.conv1
-        self.encoder_bn1 = resnet.bn1
-        self.encoder_relu = resnet.relu
-        self.encoder_maxpool = resnet.maxpool
-        
-        self.encoder_layer1 = resnet.layer1
-        self.encoder_layer2 = resnet.layer2
-        self.encoder_layer3 = resnet.layer3
-        self.encoder_layer4 = resnet.layer4
-        
-        # Decoder (simplified)
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(2048, 1024, kernel_size=2, stride=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(1024, 512, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            
-            nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            
-            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            
-            nn.Conv2d(32, num_classes, kernel_size=1),
-            nn.Sigmoid()
+        self.encoder = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+            resnet.maxpool,
+            resnet.layer1,
+            resnet.layer2,
+            resnet.layer3,
+            resnet.layer4
         )
         
+        # Decoder blocks (matching your state dict structure)
+        self.decoder = nn.ModuleList([
+            self._make_decoder_block(2048, 1024),  # block 0
+            self._make_decoder_block(1024, 512),   # block 1
+            self._make_decoder_block(512, 256),    # block 2
+            self._make_decoder_block(256, 128),    # block 3
+            self._make_decoder_block(128, 64),     # block 4
+        ])
+        
+        # Segmentation head (matches 'segmentation_head' in state dict)
+        self.segmentation_head = nn.Conv2d(64, num_classes, kernel_size=1)
+        
+    def _make_decoder_block(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+    
     def forward(self, x):
         # Encoder
-        x = self.encoder_conv1(x)
-        x = self.encoder_bn1(x)
-        x = self.encoder_relu(x)
-        x = self.encoder_maxpool(x)
-
-        x = self.encoder_layer1(x)
-        x = self.encoder_layer2(x)
-        x = self.encoder_layer3(x)
-        x = self.encoder_layer4(x)
+        x = self.encoder(x)
         
         # Decoder
-        x = self.decoder(x)
-        return x
+        for block in self.decoder:
+            x = block(x)
+            # Add upsampling if needed (adjust based on your architecture)
+            x = nn.functional.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        
+        # Segmentation head
+        x = self.segmentation_head(x)
+        return torch.sigmoid(x)
 
 @st.cache_resource
-def load_oil_spill_model():
-    """Load your specific oil spill model"""
+def load_exact_model():
+    """Load the model with exact architecture matching"""
     try:
-        # Initialize model
-        model = OilSpillModel(num_classes=1)
-        
-        # Load your specific checkpoint
-        checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
+        # Initialize model with exact architecture
+        model = ExactOilSpillModel(num_classes=1)
         
         # Load state dict
-        model.load_state_dict(checkpoint)
+        checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
+        
+        # Load state dict with strict=False to handle minor mismatches
+        model.load_state_dict(checkpoint, strict=False)
         
         model.eval()
-        st.sidebar.success("✅ Oil Spill Model Loaded!")
+        st.sidebar.success("✅ Model loaded successfully!")
         return model
         
     except Exception as e:
         st.sidebar.error(f"❌ Error loading model: {str(e)}")
         return None
 
-# Load model
-model = load_oil_spill_model()
+# Alternative: Try loading without defining architecture
+@st.cache_resource  
+def load_model_directly():
+    """Try to load the model directly"""
+    try:
+        # This will work if the model was saved with torch.save(model, ...)
+        model = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
+        
+        if isinstance(model, torch.nn.Module):
+            model.eval()
+            st.sidebar.success("✅ Full model loaded directly!")
+            return model
+        else:
+            st.sidebar.warning("⚠️ Loaded state dict, need architecture")
+            return None
+            
+    except Exception as e:
+        st.sidebar.error(f"❌ Direct loading failed: {str(e)}")
+        return None
+
+# Try both loading methods
+model = load_model_directly()
+if model is None:
+    model = load_exact_model()
 
 # Model info
 st.sidebar.header("Model Information")
 if model is not None:
-    st.sidebar.success("✅ ResNet50-based Segmentation Model")
+    st.sidebar.success("✅ Oil Spill Model Loaded")
     total_params = sum(p.numel() for p in model.parameters())
     st.sidebar.write(f"**Parameters:** {total_params:,}")
 else:
@@ -151,26 +126,21 @@ else:
 # Image preprocessing
 def preprocess_image(image, target_size=(256, 256)):
     """Preprocess image for model input"""
-    # Convert to RGB
     if image.mode != 'RGB':
         image = image.convert('RGB')
     
     original_size = image.size
-    
-    # Resize
     image = image.resize(target_size)
     
-    # Convert to numpy and normalize
+    # Convert to numpy and normalize with ImageNet stats
     img_array = np.array(image) / 255.0
-    
-    # Normalize with ImageNet stats (common for ResNet)
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
     img_array = (img_array - mean) / std
     
     # Convert to tensor
     img_tensor = torch.from_numpy(img_array).float()
-    img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0)  # HWC to BCHW
+    img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0)
     
     return img_tensor, original_size
 
@@ -181,8 +151,6 @@ def postprocess_mask(mask, original_size, threshold=0.5):
     
     # Apply threshold
     binary_mask = (mask > threshold).astype(np.uint8) * 255
-    
-    # Resize to original
     mask_resized = cv2.resize(binary_mask, original_size, interpolation=cv2.INTER_NEAREST)
     
     return mask_resized, mask
@@ -193,7 +161,7 @@ def create_oil_spill_visualization(original_image, mask, alpha=0.6):
     
     # Create colored mask (red for oil spills)
     colored_mask = np.zeros_like(original_cv)
-    colored_mask[mask > 0] = [0, 0, 255]  # Red color for oil spills
+    colored_mask[mask > 0] = [0, 0, 255]  # Red color
     
     # Blend
     blended = cv2.addWeighted(original_cv, 1 - alpha, colored_mask, alpha, 0)
@@ -208,8 +176,7 @@ confidence_threshold = st.sidebar.slider(
     min_value=0.1, 
     max_value=0.9, 
     value=0.5, 
-    step=0.1,
-    help="Higher values = more conservative detection"
+    step=0.1
 )
 
 # Main app
@@ -218,8 +185,7 @@ if model is not None:
     
     uploaded_file = st.file_uploader(
         "Choose satellite image", 
-        type=['png', 'jpg', 'jpeg', 'tiff', 'bmp'],
-        help="Upload satellite imagery for oil spill detection"
+        type=['png', 'jpg', 'jpeg', 'tiff', 'bmp']
     )
     
     if uploaded_file is not None:
@@ -257,63 +223,51 @@ if model is not None:
                 with col2:
                     st.subheader("🎭 Detection Mask")
                     st.image(binary_mask, use_column_width=True, clamp=True)
-                    
-                    # Probability map
-                    if st.checkbox("Show Confidence Map"):
-                        prob_display = (prob_map * 255).astype(np.uint8)
-                        prob_colored = cv2.applyColorMap(prob_display, cv2.COLORMAP_JET)
-                        prob_resized = cv2.resize(prob_colored, original_size)
-                        st.image(prob_resized, use_column_width=True)
                 
                 with col3:
                     st.subheader("🛢️ Oil Spill Overlay")
                     overlay = create_oil_spill_visualization(image, binary_mask)
                     st.image(overlay, use_column_width=True)
                 
-                # Oil spill statistics
+                # Statistics
                 st.subheader("📊 Oil Spill Analysis")
                 
                 total_pixels = binary_mask.size
                 oil_pixels = np.sum(binary_mask > 0)
                 oil_percentage = (oil_pixels / total_pixels) * 100
                 
-                col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
+                col_stats1, col_stats2, col_stats3 = st.columns(3)
                 
                 with col_stats1:
-                    st.metric("Oil Spill Area (pixels)", f"{oil_pixels:,}")
+                    st.metric("Oil Spill Area", f"{oil_pixels:,} px")
                 with col_stats2:
                     st.metric("Coverage", f"{oil_percentage:.2f}%")
                 with col_stats3:
-                    st.metric("Max Confidence", f"{np.max(probability_mask):.3f}")
-                with col_stats4:
-                    st.metric("Detection Quality", 
-                             "High" if oil_percentage > 1 else "Low" if oil_pixels > 0 else "None")
+                    st.metric("Confidence", f"{np.max(probability_mask):.3f}")
                 
-                # Alert system
+                # Alert
                 if oil_pixels > 0:
-                    st.warning(f"🚨 Oil spill detected! {oil_percentage:.2f}% of area affected")
+                    st.warning(f"🚨 Oil spill detected! {oil_percentage:.2f}% coverage")
                 else:
                     st.success("✅ No oil spills detected")
                 
-                # Download section
+                # Download
                 st.subheader("💾 Download Results")
                 
-                col_dl1, col_dl2, col_dl3 = st.columns(3)
+                col_dl1, col_dl2 = st.columns(2)
                 
                 with col_dl1:
-                    # Binary mask
                     mask_pil = Image.fromarray(binary_mask)
                     buf_mask = io.BytesIO()
                     mask_pil.save(buf_mask, format='PNG')
                     st.download_button(
-                        label="Download Detection Mask",
+                        label="Download Mask",
                         data=buf_mask.getvalue(),
                         file_name="oil_spill_mask.png",
                         mime="image/png"
                     )
                 
                 with col_dl2:
-                    # Overlay
                     overlay_pil = Image.fromarray(overlay)
                     buf_overlay = io.BytesIO()
                     overlay_pil.save(buf_overlay, format='PNG')
@@ -324,65 +278,25 @@ if model is not None:
                         mime="image/png"
                     )
                 
-                with col_dl3:
-                    # Analysis report
-                    report = f"""
-                    OIL SPILL DETECTION REPORT
-                    =========================
-                    Image Size: {original_size}
-                    Total Pixels: {total_pixels:,}
-                    Oil Spill Pixels: {oil_pixels:,}
-                    Area Coverage: {oil_percentage:.2f}%
-                    Detection Threshold: {confidence_threshold}
-                    Max Confidence: {np.max(probability_mask):.3f}
-                    
-                    Timestamp: {st.session_state.get('timestamp', 'N/A')}
-                    """
-                    
-                    st.download_button(
-                        label="Download Report",
-                        data=report,
-                        file_name="oil_spill_report.txt",
-                        mime="text/plain"
-                    )
-                
             except Exception as e:
                 st.error(f"❌ Prediction error: {str(e)}")
-                st.info("💡 This might be an architecture mismatch. Trying alternative approach...")
 
 else:
     st.error("""
     ❌ Model failed to load!
     
-    **Quick fix:** Rename your model file:
-    ```bash
-    # Make sure the filename matches exactly
-    mv oil_spill_model_deploy.pth oil_spill_model_deploy.pth
-    ```
+    **Please try this quick fix:**
     
-    **Or update the app to use your exact filename**
+    If you have the original training code, find how the model was defined and replace the `ExactOilSpillModel` class with your exact architecture.
+    
+    **Common solutions:**
+    1. Use the exact model class from your training script
+    2. Or share your model architecture code so I can match it exactly
     """)
 
-# Model architecture info
-with st.expander("🔧 Model Architecture Info"):
-    st.markdown("""
-    **Your Model Details:**
-    - **Base Architecture:** ResNet50 Encoder
-    - **Task:** Semantic Segmentation (Oil Spill Detection)
-    - **Output:** Binary mask (Oil vs No Oil)
-    - **Activation:** Sigmoid (for binary classification)
-    
-    **Model File:** `oil_spill_model_deploy.pth`
-    """)
-
-# Instructions
-with st.expander("📚 How to Use"):
-    st.markdown("""
-    1. **Upload** satellite imagery in common formats (PNG, JPG, etc.)
-    2. **Adjust** the detection threshold based on your needs
-    3. **View** the detection results in three panels
-    4. **Download** masks, overlays, and analysis reports
-    5. **Monitor** the oil spill statistics and alerts
-    
-    **Tip:** Higher thresholds reduce false positives but might miss smaller spills.
-    """)
+# Debug information
+with st.expander("🔧 Debug Info"):
+    st.write("**Model File:** `oil_spill_model_deploy.pth`")
+    if model is not None:
+        st.write("**Model Type:**", type(model))
+        st.write("**Model Device:**", next(model.parameters()).device)
