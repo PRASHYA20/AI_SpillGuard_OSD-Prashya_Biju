@@ -17,6 +17,38 @@ st.set_page_config(
 st.title("🌊 Oil Spill Detection")
 st.write("Upload satellite imagery for AI-powered oil spill detection")
 
+# Model loading function with proper cloud deployment handling
+@st.cache_resource
+def load_model():
+    """Load the actual model for inference"""
+    try:
+        model_path = "oil_spill_model_deploy.pth"
+        st.sidebar.info(f"🔍 Looking for model at: {model_path}")
+        
+        # Check if file exists
+        if os.path.exists(model_path):
+            file_size = os.path.getsize(model_path) / (1024 * 1024)
+            st.sidebar.success(f"✅ Model found! Size: {file_size:.1f} MB")
+            
+            # Load model with cloud-friendly settings
+            model = torch.load(model_path, map_location='cpu', weights_only=False)
+            model.eval()
+            st.sidebar.success("🎯 Model loaded successfully!")
+            return model
+        else:
+            # List available files for debugging
+            available_files = [f for f in os.listdir('.') if f.endswith(('.pth', '.pt'))]
+            st.sidebar.error(f"❌ Model file not found at: {model_path}")
+            st.sidebar.info(f"Available model files: {available_files}")
+            return None
+            
+    except Exception as e:
+        st.sidebar.error(f"❌ Model loading failed: {str(e)}")
+        return None
+
+# Load model at startup
+model = load_model()
+
 # Check for model files
 def find_model_files():
     files = os.listdir('.')
@@ -27,11 +59,17 @@ model_files = find_model_files()
 
 # File status
 st.sidebar.header("📁 Model Status")
-if model_files:
-    st.sidebar.success(f"✅ Model: {model_files[0]}")
+if model is not None:
+    st.sidebar.success(f"✅ Model: Loaded Successfully")
+    st.sidebar.write(f"Model files detected: {model_files}")
 else:
-    st.sidebar.info("🤖 Demo Mode")
-    st.sidebar.write("Using synthetic predictions")
+    st.sidebar.warning("🤖 Demo Mode - Using synthetic predictions")
+    st.sidebar.write(f"Available files: {model_files}")
+
+# Cloud deployment debug info
+st.sidebar.header("🔍 Cloud Debug")
+st.sidebar.write("Current directory:", os.getcwd())
+st.sidebar.write("All files:", [f for f in os.listdir('.') if not f.startswith('.')][:10])
 
 # Settings
 st.sidebar.header("⚙️ Detection Settings")
@@ -72,7 +110,7 @@ def preprocess_for_model(image, target_size=(256, 256)):
     return image_tensor, original_array, (original_h, original_w), resized_array
 
 def create_realistic_prediction(image_tensor, image_array):
-    """Create realistic, varied oil spill predictions"""
+    """Create realistic, varied oil spill predictions (fallback only)"""
     batch_size, channels, height, width = image_tensor.shape
     
     # Create base prediction tensor
@@ -123,7 +161,7 @@ def resize_mask_to_original(mask_pred, original_shape):
         mask_pred = mask_pred[0] if mask_pred.shape[0] == 1 else mask_pred
     
     # Convert to binary
-    mask_binary = (mask_pred > 0.5).astype(np.uint8)
+    mask_binary = (mask_pred > confidence_threshold).astype(np.uint8)
     
     # Resize to original dimensions
     mask_pil = Image.fromarray((mask_binary * 255).astype(np.uint8))
@@ -180,20 +218,29 @@ if uploaded_file is not None:
                 image, target_size=(target_size, target_size)
             )
             
-            # Generate prediction (synthetic for demo)
-            if model_files:
-                # TODO: Replace with actual model inference
-                # model = torch.load(model_files[0], map_location='cpu')
-                # model.eval()
-                # with torch.no_grad():
-                #     prediction = model(image_tensor)
-                prediction = create_realistic_prediction(image_tensor, original_array)
+            # Use ACTUAL model for prediction
+            if model is not None:
+                try:
+                    with torch.no_grad():
+                        prediction = model(image_tensor)
+                    st.success("✅ Real model used for detection")
+                    
+                    # Debug model output
+                    st.sidebar.write("🔬 Model Output Info:")
+                    st.sidebar.write(f"Output shape: {prediction.shape}")
+                    st.sidebar.write(f"Output range: {prediction.min():.3f} to {prediction.max():.3f}")
+                    
+                except Exception as e:
+                    st.error(f"❌ Model inference failed: {str(e)}")
+                    st.info("Falling back to synthetic predictions")
+                    prediction = create_realistic_prediction(image_tensor, original_array)
             else:
+                st.warning("⚠️ Using synthetic predictions (model not available)")
                 prediction = create_realistic_prediction(image_tensor, original_array)
             
             # Postprocess
             final_mask = resize_mask_to_original(prediction, original_shape)
-            final_mask_binary = (final_mask > (confidence_threshold * 255)).astype(np.uint8) * 255
+            final_mask_binary = (final_mask > 0).astype(np.uint8) * 255
             
             # Create overlay
             overlay_result = create_overlay(original_array, final_mask_binary)
@@ -313,5 +360,5 @@ st.markdown("---")
 st.markdown(
     "🌊 **Oil Spill Detection** | "
     "Built with Streamlit | "
-    "Deployed on Hugging Face Spaces"
+    "Real AI Model: " + ("✅ LOADED" if model is not None else "❌ NOT LOADED")
 )
