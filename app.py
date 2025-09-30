@@ -1,6 +1,6 @@
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 import io
 import os
 import torch
@@ -131,32 +131,25 @@ def analyze_image_features(image_array):
     """
     h, w = image_array.shape[:2]
     
-    # Convert to HSV for better color analysis
+    # Simple color analysis (no scipy dependency)
     if len(image_array.shape) == 3:
-        image_pil = Image.fromarray(image_array)
-        image_hsv = np.array(image_pil.convert('HSV'))
+        # Convert to HSV-like analysis manually
+        r, g, b = image_array[:, :, 0], image_array[:, :, 1], image_array[:, :, 2]
         
-        # Analyze water-like regions (typically blue/green in RGB, specific ranges in HSV)
-        # Water typically has high saturation and medium value in HSV
-        saturation = image_hsv[:, :, 1]
-        value = image_hsv[:, :, 2]
+        # Simple water detection based on blue-green dominance
+        blue_dominance = b > np.maximum(r, g)
+        green_dominance = g > np.maximum(r, b)
+        water_like = blue_dominance | green_dominance
         
-        # Detect potential water areas (adjust these thresholds based on your imagery)
-        water_mask = (saturation > 30) & (saturation < 200) & (value > 50) & (value < 220)
-        
-        # Find connected water regions
-        from scipy import ndimage
-        labeled_water, num_features = ndimage.label(water_mask)
+        water_coverage = np.sum(water_like) / (h * w)
         
         return {
-            'water_regions': labeled_water,
-            'num_water_regions': num_features,
-            'water_coverage': np.sum(water_mask) / (h * w),
-            'avg_saturation': np.mean(saturation),
-            'avg_value': np.mean(value)
+            'water_coverage': water_coverage,
+            'num_water_regions': min(int(water_coverage * 10) + 1, 8),
+            'avg_brightness': np.mean(image_array) / 255.0
         }
     
-    return {'water_coverage': 0.5, 'num_water_regions': 3}  # Default fallback
+    return {'water_coverage': 0.5, 'num_water_regions': 3, 'avg_brightness': 0.5}
 
 def create_dynamic_prediction(image_tensor, image_array, original_shape):
     """
@@ -288,4 +281,114 @@ if uploaded_file is not None:
                 
                 if prediction is not None:
                     # CORRECT POSTPROCESSING
-                    final_mask = post
+                    final_mask = postprocess_to_original_size(
+                        prediction, 
+                        original_shape, 
+                        target_size=(target_size, target_size)
+                    )
+                    
+                    # Apply confidence threshold
+                    final_mask_binary = (final_mask > (confidence_threshold * 255)).astype(np.uint8) * 255
+                    
+                    # CREATE PERFECT OVERLAY
+                    overlay_result = create_perfect_overlay(original_array, final_mask_binary)
+                    
+                    # Convert to PIL for display
+                    mask_display = Image.fromarray(final_mask_binary)
+                    
+                    # Display results
+                    with col2:
+                        st.subheader("🎭 Detection Mask")
+                        st.image(mask_display, use_container_width=True, clamp=True)
+                        st.write("White = Oil spill areas")
+                    
+                    with col3:
+                        st.subheader("🛢️ Oil Spill Overlay")
+                        st.image(overlay_result, use_container_width=True)
+                        st.write("Red = Detected spills")
+                    
+                    # Analysis
+                    st.subheader("📊 Quantitative Analysis")
+                    
+                    # Calculate accurate statistics
+                    total_pixels = final_mask_binary.size
+                    spill_pixels = np.sum(final_mask_binary > 0)
+                    coverage_percent = (spill_pixels / total_pixels) * 100
+                    
+                    metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+                    
+                    with metrics_col1:
+                        st.metric("Spill Coverage", f"{coverage_percent:.3f}%")
+                    with metrics_col2:
+                        st.metric("Affected Area", f"{spill_pixels:,} px")
+                    with metrics_col3:
+                        st.metric("Confidence", f"{confidence_threshold:.1f}")
+                    
+                    # Dynamic risk assessment based on actual prediction
+                    st.subheader("🎯 Risk Assessment")
+                    if coverage_percent > 5:
+                        st.error("🚨 CRITICAL: Major oil spill detected")
+                        st.write("**Characteristics**: Large, connected spill areas")
+                    elif coverage_percent > 1:
+                        st.warning("⚠️ HIGH: Significant contamination")
+                        st.write("**Characteristics**: Multiple medium-sized spills")
+                    elif coverage_percent > 0.1:
+                        st.info("🔶 MEDIUM: Moderate spill detection")
+                        st.write("**Characteristics**: Small scattered spills")
+                    elif coverage_percent > 0.01:
+                        st.success("🔷 LOW: Minor detection")
+                        st.write("**Characteristics**: Isolated small spills")
+                    else:
+                        st.success("✅ CLEAN: No oil spills detected")
+                        st.write("**Characteristics**: Clean water body")
+                
+                else:
+                    st.error("❌ Model prediction failed")
+        
+        else:
+            st.warning("🤖 No model file found - Running in demo mode")
+            
+            with col2:
+                st.subheader("📋 Setup Required")
+                st.write("To enable real AI detection, add your trained model file")
+            
+            with col3:
+                st.subheader("📁 Current Files")
+                files = os.listdir('.')
+                for file in sorted(files)[:6]:
+                    st.write(f"• {file}")
+    
+    except Exception as e:
+        st.error(f"💥 Processing error: {str(e)}")
+
+else:
+    st.info("👆 Upload a satellite image to begin oil spill detection")
+
+# Add image analysis info
+with st.expander("🔍 Image Analysis Details"):
+    if uploaded_file is not None:
+        try:
+            image_for_analysis = Image.open(uploaded_file).convert("RGB")
+            image_array = np.array(image_for_analysis)
+            features = analyze_image_features(image_array)
+            st.write("**Image Analysis:**")
+            st.write(f"- Water-like coverage: {features['water_coverage']:.1%}")
+            st.write(f"- Estimated water regions: {features['num_water_regions']}")
+            st.write(f"- Average brightness: {features.get('avg_brightness', 0):.1f}")
+        except Exception as e:
+            st.write(f"Image analysis: {e}")
+    
+    st.write("**Note**: Current predictions are synthetic/demo. For real detection:")
+    st.write("1. Add your trained model file (.pth/.pt)")
+    st.write("2. Replace the `load_model_and_predict` function")
+    st.write("3. Ensure training and inference preprocessing match exactly")
+
+# Requirements info
+with st.expander("📋 Requirements"):
+    st.code("""
+streamlit
+numpy
+pillow
+torch
+torchvision
+""")
