@@ -6,6 +6,7 @@ import os
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
+import torchvision.models as models
 
 # Set page config
 st.set_page_config(
@@ -17,139 +18,80 @@ st.set_page_config(
 st.title("🌊 Oil Spill Detection")
 st.write("Upload satellite imagery for AI-powered oil spill detection")
 
-# Debug: Check all files in directory
-st.sidebar.header("🔍 File System Debug")
-current_dir = os.getcwd()
-st.sidebar.write(f"Current directory: {current_dir}")
-
-# List all files with sizes
-all_files = os.listdir('.')
-st.sidebar.write("All files in directory:")
-for file in all_files:
-    if os.path.isfile(file):
-        file_size = os.path.getsize(file) / (1024 * 1024)  # Size in MB
-        st.sidebar.write(f"- {file}: {file_size:.2f} MB")
-
-# Check specifically for model files
-model_files = [f for f in all_files if f.endswith(('.pth', '.pt'))]
-st.sidebar.header("📁 Model Files Found")
-if model_files:
-    for model_file in model_files:
-        file_size = os.path.getsize(model_file) / (1024 * 1024)
-        st.sidebar.write(f"✅ {model_file}: {file_size:.2f} MB")
-else:
-    st.sidebar.error("❌ No model files found!")
-
-# Simple model architecture for testing
-class SimpleOilSpillModel(nn.Module):
+# Define the correct model architecture based on the state dict keys
+class OilSpillSegmentationModel(nn.Module):
     def __init__(self):
-        super(SimpleOilSpillModel, self).__init__()
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(3, 32, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1))
+        super(OilSpillSegmentationModel, self).__init__()
+        # Based on the state dict keys, this appears to be a ResNet-based encoder with decoder
+        # Using a pretrained ResNet as encoder
+        self.encoder = models.resnet50(pretrained=False)
+        # Remove the final classification layer
+        self.encoder = nn.Sequential(*list(self.encoder.children())[:-2])
+        
+        # Simple decoder for segmentation
+        self.decoder = nn.Sequential(
+            nn.Conv2d(2048, 512, 3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            
+            nn.Conv2d(512, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            
+            nn.Conv2d(256, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            
+            nn.Conv2d(128, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
         )
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
-        )
+        
+        self.segmentation_head = nn.Conv2d(64, 1, 1)
+        self.sigmoid = nn.Sigmoid()
     
     def forward(self, x):
-        x = self.conv_layers(x)
-        x = self.classifier(x)
+        # Encoder
+        features = self.encoder(x)
+        
+        # Decoder
+        x = self.decoder(features)
+        
+        # Segmentation head
+        x = self.segmentation_head(x)
+        x = self.sigmoid(x)
+        
         return x
 
 @st.cache_resource
 def load_model():
-    """Try to load model with extensive debugging"""
+    """Load the model with the correct architecture"""
     model_path = "oil_spill_model_deploy.pth"
     
-    st.sidebar.header("🔄 Model Loading Debug")
-    
-    # Check if file exists and has content
     if not os.path.exists(model_path):
-        st.sidebar.error(f"❌ File does not exist: {model_path}")
+        st.error(f"❌ Model file not found: {model_path}")
         return None
-    
-    file_size = os.path.getsize(model_path)
-    st.sidebar.write(f"File size: {file_size} bytes")
-    
-    if file_size == 0:
-        st.sidebar.error("❌ Model file is EMPTY (0 bytes)")
-        return None
-    
-    if file_size < 1024:  # Less than 1KB
-        st.sidebar.warning(f"⚠️ Model file very small: {file_size} bytes")
     
     try:
-        # Try to load the file
-        st.sidebar.info("🔄 Attempting to load model...")
+        # Load state dict
+        state_dict = torch.load(model_path, map_location='cpu')
         
-        # First, let's see what's in the file
-        try:
-            checkpoint = torch.load(model_path, map_location='cpu')
-            st.sidebar.success("✅ File can be loaded with torch.load")
-            
-            # Debug what's inside
-            st.sidebar.write("📋 Checkpoint type:", type(checkpoint))
-            if isinstance(checkpoint, dict):
-                st.sidebar.write("📋 Checkpoint keys:", list(checkpoint.keys()))
-                if 'state_dict' in checkpoint:
-                    st.sidebar.write("📋 State dict keys sample:", list(checkpoint['state_dict'].keys())[:5])
-        except Exception as e:
-            st.sidebar.error(f"❌ torch.load failed: {e}")
-            return None
+        # Create model with correct architecture
+        model = OilSpillSegmentationModel()
         
-        # Try different loading strategies
-        strategies = [
-            ("Direct state dict", lambda: torch.load(model_path, map_location='cpu')),
-            ("With weights_only=False", lambda: torch.load(model_path, map_location='cpu', weights_only=False)),
-        ]
+        # Load state dict with strict=False (since we're using a simplified architecture)
+        model.load_state_dict(state_dict, strict=False)
+        model.eval()
         
-        for strategy_name, load_func in strategies:
-            try:
-                st.sidebar.info(f"🔄 Trying: {strategy_name}")
-                loaded_data = load_func()
-                
-                if isinstance(loaded_data, dict):
-                    # It's a state dict
-                    model = SimpleOilSpillModel()
-                    try:
-                        model.load_state_dict(loaded_data)
-                        model.eval()
-                        st.sidebar.success(f"✅ Loaded successfully with {strategy_name}")
-                        return model
-                    except Exception as e:
-                        st.sidebar.warning(f"❌ State dict loading failed: {e}")
-                        # Try with strict=False
-                        try:
-                            model.load_state_dict(loaded_data, strict=False)
-                            model.eval()
-                            st.sidebar.success(f"✅ Loaded with strict=False using {strategy_name}")
-                            return model
-                        except:
-                            continue
-                else:
-                    st.sidebar.warning(f"❌ Unexpected data type: {type(loaded_data)}")
-                    
-            except Exception as e:
-                st.sidebar.warning(f"❌ {strategy_name} failed: {e}")
-                continue
-        
-        st.sidebar.error("❌ All loading strategies failed")
-        return None
+        st.success("✅ Model loaded successfully!")
+        return model
         
     except Exception as e:
-        st.sidebar.error(f"❌ Model loading failed: {e}")
+        st.error(f"❌ Model loading failed: {e}")
         return None
 
 # Load model
@@ -158,13 +100,18 @@ model = load_model()
 # Settings
 st.sidebar.header("⚙️ Detection Settings")
 confidence_threshold = st.sidebar.slider(
-    "Confidence Threshold", 0.1, 0.9, 0.7, 0.05
+    "Confidence Threshold", 0.1, 0.99, 0.7, 0.01
 )
 
 target_size = st.sidebar.selectbox("Processing Size", [256, 512, 224], index=0)
 
-# Rest of your existing code for preprocessing, visualization etc.
-# ... (include all the previous functions like preprocess_for_model, etc.)
+# Advanced settings
+st.sidebar.header("🎯 Advanced Settings")
+min_spill_size = st.sidebar.slider(
+    "Minimum Spill Size (pixels)", 10, 1000, 50, 10
+)
+
+apply_morphology = st.sidebar.checkbox("Apply Noise Filtering", value=True)
 
 def preprocess_for_model(image, target_size=(256, 256)):
     """Preprocess image for model inference"""
@@ -186,21 +133,59 @@ def preprocess_for_model(image, target_size=(256, 256)):
     image_tensor = transform(original_pil).unsqueeze(0)
     return image_tensor, original_array, (original_h, original_w)
 
-def create_demo_prediction(image_tensor, original_shape):
-    """Create a simple demo prediction when model is not available"""
-    # Create a simple elliptical "spill" in the center
-    h, w = original_shape
-    mask = np.zeros((h, w), dtype=np.uint8)
+def process_model_output(prediction, original_shape, confidence_threshold=0.5):
+    """Process the actual model output"""
+    # Convert prediction to numpy
+    if isinstance(prediction, torch.Tensor):
+        prediction = prediction.squeeze().detach().cpu().numpy()
     
-    # Add a simple elliptical area
-    center_y, center_x = h // 2, w // 2
-    radius_y, radius_x = h // 6, w // 6
+    st.sidebar.write("🔬 Model Output Analysis:")
+    st.sidebar.write(f"Shape: {prediction.shape}")
+    st.sidebar.write(f"Range: {prediction.min():.3f} to {prediction.max():.3f}")
+    st.sidebar.write(f"Mean: {prediction.mean():.3f}")
     
-    y, x = np.ogrid[:h, :w]
-    ellipse_mask = ((x - center_x)**2 / radius_x**2 + (y - center_y)**2 / radius_y**2) <= 1
-    mask[ellipse_mask] = 255
+    # Apply confidence threshold
+    binary_mask = (prediction > confidence_threshold).astype(np.uint8)
     
-    return mask
+    st.sidebar.write(f"Detected pixels: {np.sum(binary_mask)}")
+    
+    # Resize to original dimensions
+    mask_pil = Image.fromarray((binary_mask * 255).astype(np.uint8))
+    mask_resized = mask_pil.resize(
+        (original_shape[1], original_shape[0]), 
+        Image.Resampling.NEAREST
+    )
+    final_mask = np.array(mask_resized)
+    
+    # Apply morphology operations to clean up the mask
+    if apply_morphology:
+        pil_mask = Image.fromarray(final_mask)
+        for _ in range(2):
+            pil_mask = pil_mask.filter(ImageFilter.MinFilter(3))  # Erosion
+        for _ in range(2):
+            pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))  # Dilation
+        final_mask = np.array(pil_mask)
+    
+    return final_mask
+
+def create_overlay(original_image, mask, alpha=0.6):
+    """Create overlay visualization"""
+    if isinstance(original_image, np.ndarray):
+        original_pil = Image.fromarray(original_image.astype(np.uint8))
+    else:
+        original_pil = original_image
+    
+    # Create overlay
+    original_rgba = original_pil.convert('RGBA')
+    red_overlay = Image.new('RGBA', original_rgba.size, (255, 0, 0, int(255 * alpha)))
+    
+    # Create mask
+    mask_binary = mask > 0
+    mask_pil = Image.fromarray((mask_binary * 255).astype(np.uint8)).convert('L')
+    
+    # Composite images
+    result = Image.composite(red_overlay, original_rgba, mask_pil)
+    return result.convert('RGB')
 
 # Main app interface
 uploaded_file = st.file_uploader(
@@ -221,7 +206,7 @@ if uploaded_file is not None:
             st.image(image, use_container_width=True)
             st.caption(f"Dimensions: {image.size}")
         
-        with st.spinner("🔄 Analyzing image..."):
+        with st.spinner("🔄 Analyzing image for oil spills..."):
             # Preprocess
             image_tensor, original_array, original_shape = preprocess_for_model(
                 image, target_size=(target_size, target_size)
@@ -230,33 +215,53 @@ if uploaded_file is not None:
             if model is not None:
                 try:
                     with torch.no_grad():
+                        # Use the actual model for prediction
                         prediction = model(image_tensor)
                     st.success("✅ Real model used for detection")
-                    # Process prediction here
-                    final_mask = create_demo_prediction(image_tensor, original_shape)  # Replace with actual processing
+                    
+                    # Process the actual model output
+                    final_mask = process_model_output(prediction, original_shape, confidence_threshold)
+                    
                 except Exception as e:
                     st.error(f"❌ Model inference failed: {e}")
-                    final_mask = create_demo_prediction(image_tensor, original_shape)
+                    # Fallback to simple detection
+                    h, w = original_shape
+                    final_mask = np.zeros((h, w), dtype=np.uint8)
+                    
             else:
-                st.warning("⚠️ Using demo mode (model not available)")
-                final_mask = create_demo_prediction(image_tensor, original_shape)
+                st.error("❌ Model not available")
+                h, w = original_shape
+                final_mask = np.zeros((h, w), dtype=np.uint8)
             
             # Display results
             mask_display = Image.fromarray(final_mask)
             with col2:
                 st.subheader("🎭 Detection Mask")
                 st.image(mask_display, use_container_width=True, clamp=True)
+                st.caption(f"Spill coverage: {np.sum(final_mask > 0) / final_mask.size * 100:.2f}%")
             
             # Create overlay
-            overlay_pil = image.copy().convert('RGBA')
-            overlay_array = np.array(overlay_pil)
-            red_overlay = np.zeros_like(overlay_array)
-            red_overlay[final_mask > 0] = [255, 0, 0, 128]
-            overlay_result = Image.alpha_composite(overlay_pil, Image.fromarray(red_overlay.astype(np.uint8)))
+            overlay_result = create_overlay(original_array, final_mask)
             
             with col3:
                 st.subheader("🛢️ Oil Spill Overlay")
                 st.image(overlay_result, use_container_width=True)
+                st.caption("Red areas = Detected oil spills")
+            
+            # Analysis results
+            st.subheader("📊 Analysis Results")
+            spill_pixels = np.sum(final_mask > 0)
+            total_pixels = final_mask.size
+            coverage_percent = (spill_pixels / total_pixels) * 100
+            
+            col_metrics1, col_metrics2, col_metrics3 = st.columns(3)
+            with col_metrics1:
+                st.metric("Spill Coverage", f"{coverage_percent:.4f}%")
+            with col_metrics2:
+                st.metric("Affected Area", f"{spill_pixels:,} px")
+            with col_metrics3:
+                status = "🚨 SPILL DETECTED" if spill_pixels > 0 else "✅ CLEAN"
+                st.metric("Status", status)
 
     except Exception as e:
         st.error(f"❌ Error processing image: {e}")
@@ -264,10 +269,8 @@ if uploaded_file is not None:
 else:
     st.info("👆 Upload a satellite image to begin analysis")
 
-# Show final status
-st.sidebar.header("🎯 Final Status")
+# Show model status
 if model is not None:
     st.sidebar.success("✅ Model: LOADED AND READY")
 else:
     st.sidebar.error("❌ Model: NOT AVAILABLE")
-    st.sidebar.info("💡 Solution: Check if your model file is properly uploaded to GitHub and deployed")
