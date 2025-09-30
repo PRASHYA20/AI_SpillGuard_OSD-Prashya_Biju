@@ -36,8 +36,6 @@ def find_model_file():
     possible_names = [
         "oil_spill_model_deploy.pth",
         "./oil_spill_model_deploy.pth", 
-        "app/oil_spill_model_deploy.pth",
-        "/mount/src/ai_spillguard_osd-prashya_biju/oil_spill_model_deploy.pth"
     ]
     
     for model_path in possible_names:
@@ -131,7 +129,7 @@ model = load_model()
 # Settings
 st.sidebar.header("⚙️ Detection Settings")
 confidence_threshold = st.sidebar.slider(
-    "Confidence Threshold", 0.1, 0.99, 0.7, 0.01,
+    "Confidence Threshold", 0.1, 0.99, 0.3, 0.01,  # Lower default for oil spill
     help="Higher values = fewer false positives"
 )
 
@@ -143,13 +141,19 @@ target_size = st.sidebar.selectbox(
 # Advanced settings
 st.sidebar.header("🎯 Advanced Settings")
 min_spill_size = st.sidebar.slider(
-    "Minimum Spill Size (pixels)", 10, 1000, 50, 10,
+    "Minimum Spill Size (pixels)", 10, 1000, 100, 10,
     help="Filter out small detections"
 )
 
 apply_morphology = st.sidebar.checkbox(
     "Apply Noise Filtering", value=True,
     help="Remove small noise from detections"
+)
+
+# NEW: Add output inversion option
+invert_output = st.sidebar.checkbox(
+    "Invert Detection", value=True,  # Default to True since you're having inversion issues
+    help="If oil spills are detected as background, enable this"
 )
 
 def preprocess_for_model(image, target_size=(256, 256)):
@@ -173,17 +177,28 @@ def preprocess_for_model(image, target_size=(256, 256)):
     return image_tensor, original_array, (original_h, original_w)
 
 def process_model_output(prediction, original_shape, confidence_threshold=0.5):
-    """Process the actual model output"""
+    """Process the actual model output with inversion handling"""
     if isinstance(prediction, torch.Tensor):
         prediction = prediction.squeeze().detach().cpu().numpy()
     
     # Debug info
-    st.sidebar.write("🔬 Model Output:")
+    st.sidebar.write("🔬 Model Output Analysis:")
     st.sidebar.write(f"Shape: {prediction.shape}")
     st.sidebar.write(f"Range: {prediction.min():.3f} to {prediction.max():.3f}")
+    st.sidebar.write(f"Mean: {prediction.mean():.3f}")
     
     # Apply confidence threshold
     binary_mask = (prediction > confidence_threshold).astype(np.uint8)
+    
+    st.sidebar.write(f"Pixels above threshold: {np.sum(binary_mask)}")
+    
+    # NEW: Invert the mask if needed
+    if invert_output:
+        st.sidebar.info("🔄 Output inverted (oil = white)")
+        binary_mask = 1 - binary_mask  # Invert the mask
+        st.sidebar.write(f"After inversion: {np.sum(binary_mask)} pixels")
+    else:
+        st.sidebar.info("↔️ Normal output (oil = white)")
     
     # Resize to original dimensions
     mask_pil = Image.fromarray((binary_mask * 255).astype(np.uint8))
@@ -197,10 +212,21 @@ def process_model_output(prediction, original_shape, confidence_threshold=0.5):
     if apply_morphology:
         pil_mask = Image.fromarray(final_mask)
         for _ in range(2):
-            pil_mask = pil_mask.filter(ImageFilter.MinFilter(3))
+            pil_mask = pil_mask.filter(ImageFilter.MinFilter(3))  # Remove small noise
         for _ in range(2):
-            pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))
+            pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))  # Fill small holes
         final_mask = np.array(pil_mask)
+    
+    # Filter by minimum size
+    if min_spill_size > 1:
+        # Simple size filtering using connected components
+        from scipy import ndimage
+        labeled_array, num_features = ndimage.label(final_mask > 0)
+        
+        for i in range(1, num_features + 1):
+            component_size = np.sum(labeled_array == i)
+            if component_size < min_spill_size:
+                final_mask[labeled_array == i] = 0
     
     return final_mask
 
@@ -219,25 +245,6 @@ def create_overlay(original_image, mask, alpha=0.6):
     
     result = Image.composite(red_overlay, original_rgba, mask_pil)
     return result.convert('RGB')
-
-# Demo function for when model is not available
-def create_demo_detection(original_shape):
-    """Create a realistic demo detection"""
-    h, w = original_shape
-    mask = np.zeros((h, w), dtype=np.uint8)
-    
-    # Add some random "spill" shapes
-    for _ in range(3):
-        center_x = np.random.randint(w//4, 3*w//4)
-        center_y = np.random.randint(h//4, 3*h//4)
-        radius_x = np.random.randint(20, min(w, h)//8)
-        radius_y = np.random.randint(20, min(w, h)//8)
-        
-        y, x = np.ogrid[:h, :w]
-        ellipse = ((x - center_x)**2 / radius_x**2 + (y - center_y)**2 / radius_y**2) <= 1
-        mask[ellipse] = 255
-    
-    return mask
 
 # Main app interface
 uploaded_file = st.file_uploader(
@@ -275,17 +282,31 @@ if uploaded_file is not None:
                     
                 except Exception as e:
                     st.error(f"❌ Model inference failed: {e}")
-                    st.warning("⚠️ Using demo detection")
-                    final_mask = create_demo_detection(original_shape)
+                    # Create a simple demo detection
+                    h, w = original_shape
+                    final_mask = np.zeros((h, w), dtype=np.uint8)
+                    # Add a demo spill in the center
+                    center_y, center_x = h // 2, w // 2
+                    y, x = np.ogrid[:h, :w]
+                    ellipse_mask = ((x - center_x)**2 / (w//8)**2 + (y - center_y)**2 / (h//8)**2) <= 1
+                    final_mask[ellipse_mask] = 255
+                    st.warning("⚠️ Using demo detection due to model error")
             else:
                 st.warning("⚠️ Using demo detection (model not available)")
-                final_mask = create_demo_detection(original_shape)
+                # Create demo detection
+                h, w = original_shape
+                final_mask = np.zeros((h, w), dtype=np.uint8)
+                center_y, center_x = h // 2, w // 2
+                y, x = np.ogrid[:h, :w]
+                ellipse_mask = ((x - center_x)**2 / (w//8)**2 + (y - center_y)**2 / (h//8)**2) <= 1
+                final_mask[ellipse_mask] = 255
             
             # Display results
             mask_display = Image.fromarray(final_mask)
             with col2:
                 st.subheader("🎭 Detection Mask")
                 st.image(mask_display, use_container_width=True, clamp=True)
+                st.caption("White = Oil Spill Areas")
             
             # Create overlay
             overlay_result = create_overlay(original_array, final_mask)
@@ -293,6 +314,7 @@ if uploaded_file is not None:
             with col3:
                 st.subheader("🛢️ Oil Spill Overlay")
                 st.image(overlay_result, use_container_width=True)
+                st.caption("Red = Detected Oil Spills")
             
             # Analysis results
             st.subheader("📊 Analysis Results")
@@ -300,20 +322,46 @@ if uploaded_file is not None:
             total_pixels = final_mask.size
             coverage_percent = (spill_pixels / total_pixels) * 100
             
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Spill Coverage", f"{coverage_percent:.4f}%")
             with col2:
                 st.metric("Affected Area", f"{spill_pixels:,} px")
             with col3:
+                st.metric("Confidence", f"{confidence_threshold:.2f}")
+            with col4:
                 status = "🚨 SPILL DETECTED" if spill_pixels > 0 else "✅ CLEAN"
                 st.metric("Status", status)
+            
+            # Risk assessment
+            if coverage_percent > 5:
+                st.error("🚨 **CRITICAL RISK** - Major oil spill detected")
+            elif coverage_percent > 1:
+                st.warning("⚠️ **HIGH RISK** - Significant oil contamination")
+            elif coverage_percent > 0.1:
+                st.info("🔶 **MEDIUM RISK** - Moderate spill detected")
+            elif coverage_percent > 0.01:
+                st.success("🔷 **LOW RISK** - Minor detection")
+            else:
+                st.success("✅ **CLEAN** - No oil spills detected")
 
     except Exception as e:
         st.error(f"❌ Error processing image: {e}")
 
 else:
     st.info("👆 Upload a satellite image to begin analysis")
+    
+    # Instructions
+    st.subheader("🎯 How to Use")
+    st.markdown("""
+    1. **Upload** a satellite image containing water areas
+    2. **Adjust settings** if needed:
+       - **Lower confidence** (0.2-0.4) for more sensitive detection
+       - **Higher confidence** (0.6-0.8) for fewer false positives
+       - **Enable 'Invert Detection'** if oil is detected as background
+    3. **View results** in the detection mask and overlay
+    4. **Download** results for analysis
+    """)
 
 # Final status
 st.sidebar.header("🎯 System Status")
@@ -323,3 +371,12 @@ if model is not None:
 else:
     st.sidebar.warning("⚠️ Model: NOT AVAILABLE")
     st.sidebar.info("Demo mode active")
+
+# Tips
+st.sidebar.header("💡 Tips")
+st.sidebar.markdown("""
+- Start with **low confidence** (0.3) and **invert enabled**
+- Adjust **confidence threshold** based on results
+- Enable **noise filtering** to remove small detections
+- Use **minimum spill size** to filter noise
+""")
