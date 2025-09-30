@@ -1,11 +1,43 @@
-📌 Submission Details
+---
+title: Oil Spill Detection
+emoji: 🌊
+colorFrom: blue
+colorTo: green
+sdk: streamlit
+sdk_version: 1.28.0
+app_file: app.py
+pinned: false
+---
 
-1. Fork this repository to your own GitHub account, naming it AI_SpillGuard_OSD-[YourName] (replace [YourName] with your actual name).
+# 🌊 Oil Spill Detection
 
-2. Create a folder with your name inside your forked repo and place all your work (code, dataset links, results, and a README).
+AI-powered satellite imagery analysis for detecting oil spills in water bodies.
 
-3. Make regular and meaningful commits for every milestone.
+## 🚀 Features
 
-4. Push your changes to your forked repository or upload your work manually.
+- **Satellite Image Analysis**: Process various satellite image formats
+- **AI Detection**: Advanced oil spill detection algorithms
+- **Risk Assessment**: Automatic risk level classification
+- **Export Results**: Download detection masks and overlays
+- **Customizable Sensitivity**: Adjust detection confidence thresholds
 
-5. Update your repository at every milestone to reflect your progress.
+## 🛠️ Usage
+
+1. Upload a satellite image (JPEG, PNG, TIFF, BMP)
+2. Adjust detection settings if needed
+3. View AI-generated oil spill detection results
+4. Download results for further analysis
+
+## 🔧 Technical Details
+
+- Built with PyTorch and Streamlit
+- Supports multiple image formats
+- Real-time processing and visualization
+- Responsive design for all devices
+
+## 📁 Model Support
+
+The app can integrate with trained PyTorch models (.pth, .pt files) for real inference.
+
+---
+*Deployed on Hugging Face Spaces*
