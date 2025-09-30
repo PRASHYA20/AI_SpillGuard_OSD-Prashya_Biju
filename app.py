@@ -1,11 +1,11 @@
 import streamlit as st
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 import io
 import os
 import torch
 import torchvision.transforms as transforms
-import cv2
+import random
 
 # Set page config
 st.set_page_config(
@@ -102,6 +102,56 @@ def preprocess_for_model(image, target_size=(256, 256)):
     
     return image_tensor, original_array, (original_h, original_w), resized_array
 
+def filter_small_components(mask, min_size):
+    """Remove small connected components from mask using PIL/numpy"""
+    if min_size <= 1:
+        return mask
+    
+    # Convert to binary
+    binary_mask = (mask > 0).astype(np.uint8)
+    
+    # Simple connected component analysis using scipy or manual implementation
+    try:
+        from scipy import ndimage
+        # Use scipy's label function if available
+        labeled_array, num_features = ndimage.label(binary_mask)
+        
+        # Create new mask with size filtering
+        filtered_mask = np.zeros_like(binary_mask)
+        for i in range(1, num_features + 1):
+            component_size = np.sum(labeled_array == i)
+            if component_size >= min_size:
+                filtered_mask[labeled_array == i] = 1
+        
+        return filtered_mask * 255
+    except ImportError:
+        # Fallback: simple erosion/dilation for noise removal
+        if min_size > 50:  # Only apply if min_size is significant
+            pil_mask = Image.fromarray(binary_mask * 255)
+            # Simple noise removal using erosion followed by dilation
+            for _ in range(2):
+                pil_mask = pil_mask.filter(ImageFilter.MinFilter(3))  # Erosion
+            for _ in range(2):
+                pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))  # Dilation
+            return np.array(pil_mask)
+        else:
+            return mask
+
+def apply_morphology_operations(mask):
+    """Apply basic morphology operations using PIL"""
+    if not apply_morphology:
+        return mask
+    
+    pil_mask = Image.fromarray(mask)
+    
+    # Opening: erosion followed by dilation (removes small noise)
+    for _ in range(2):
+        pil_mask = pil_mask.filter(ImageFilter.MinFilter(3))  # Erosion
+    for _ in range(2):
+        pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))  # Dilation
+    
+    return np.array(pil_mask)
+
 def process_model_output(prediction, original_shape, confidence_threshold=0.5):
     """Process model output with proper thresholding and filtering"""
     # Convert prediction to numpy
@@ -135,24 +185,28 @@ def process_model_output(prediction, original_shape, confidence_threshold=0.5):
     final_mask = np.array(mask_resized)
     
     # Apply morphology operations to clean up the mask
-    if apply_morphology:
-        kernel = np.ones((3, 3), np.uint8)
-        final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_OPEN, kernel)
-        final_mask = cv2.morphologyEx(final_mask, cv2.MORPH_CLOSE, kernel)
+    final_mask = apply_morphology_operations(final_mask)
     
     # Filter by minimum size
-    if min_spill_size > 1:
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(final_mask, connectivity=8)
-        
-        # Create new mask with size filtering
-        filtered_mask = np.zeros_like(final_mask)
-        for i in range(1, num_labels):  # Skip background (0)
-            if stats[i, cv2.CC_STAT_AREA] >= min_spill_size:
-                filtered_mask[labels == i] = 255
-        
-        final_mask = filtered_mask
+    final_mask = filter_small_components(final_mask, min_spill_size)
     
     return final_mask
+
+def analyze_water_areas(image_array, mask):
+    """Simple analysis to focus on water areas using color analysis"""
+    # Simple water detection based on blue/green channels
+    r, g, b = image_array[:,:,0], image_array[:,:,1], image_array[:,:,2]
+    
+    # Water typically has higher blue/green values
+    blue_dominant = (b > r) & (b > g)
+    green_dominant = (g > r) & (g > b)
+    water_like = blue_dominant | green_dominant
+    
+    # Only keep detections in water-like areas
+    water_based_mask = mask.copy()
+    water_based_mask[~water_like] = 0
+    
+    return water_based_mask
 
 def create_overlay(original_image, mask, alpha=0.6):
     """Create overlay visualization"""
@@ -172,27 +226,6 @@ def create_overlay(original_image, mask, alpha=0.6):
     # Composite images
     result = Image.composite(red_overlay, original_rgba, mask_pil)
     return result.convert('RGB')
-
-def analyze_water_areas(image_array, mask):
-    """Simple analysis to focus on water areas"""
-    # Convert to HSV for better water detection
-    hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
-    
-    # Define water color ranges in HSV
-    lower_water1 = np.array([90, 30, 30])   # Blue water
-    upper_water1 = np.array([130, 255, 255])
-    lower_water2 = np.array([30, 30, 30])   # Green water
-    upper_water2 = np.array([90, 255, 255])
-    
-    # Create water masks
-    water_mask1 = cv2.inRange(hsv, lower_water1, upper_water1)
-    water_mask2 = cv2.inRange(hsv, lower_water2, upper_water2)
-    water_mask = cv2.bitwise_or(water_mask1, water_mask2)
-    
-    # Only keep detections in water areas
-    water_based_mask = cv2.bitwise_and(mask, water_mask)
-    
-    return water_based_mask
 
 # Main app interface
 uploaded_file = st.file_uploader(
@@ -349,9 +382,9 @@ else:
         
         **Tips for better results:**
         - Use clear satellite imagery
-        - Start with higher confidence threshold
+        - Start with higher confidence threshold (0.7+)
         - Enable noise filtering
-        - Adjust minimum spill size
+        - Adjust minimum spill size (100+ pixels)
         """)
     
     with col_info2:
@@ -366,10 +399,7 @@ else:
         - 💾 Result export
         """)
 
-# Footer
+# Model status in footer
 st.markdown("---")
-st.markdown(
-    "🌊 **Oil Spill Detection** | "
-    "Built with Streamlit | "
-    "Real AI Model: " + ("✅ LOADED" if model is not None else "❌ NOT LOADED")
-)
+model_status = "✅ LOADED" if model is not None else "❌ NOT LOADED"
+st.markdown(f"🌊 **Oil Spill Detection** | Built with Streamlit | Real AI Model: {model_status}")
