@@ -157,7 +157,7 @@ if uploaded_file is not None:
     
     with col1:
         st.subheader("Original Image")
-        st.image(image, use_container_width=True)
+        st.image(image, width='stretch')
         st.write(f"Size: {image.size}")
     
     # Process image
@@ -216,7 +216,7 @@ if uploaded_file is not None:
             # Display results
             with col2:
                 st.subheader("Predicted Mask")
-                st.image(best_result['mask'], use_container_width=True)
+                st.image(best_result['mask'], width='stretch')
                 
                 st.write("**Detection Results:**")
                 st.write(f"- Oil Pixels: {best_result['oil_pixels']:,}")
@@ -233,7 +233,7 @@ if uploaded_file is not None:
                 blended = cv2.addWeighted(original_cv, 0.7, colored, 0.3, 0)
                 blended_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
                 
-                st.image(blended_rgb, use_container_width=True)
+                st.image(blended_rgb, width='stretch')
                 st.write(f"Threshold: {threshold}")
             
             # Model analysis
