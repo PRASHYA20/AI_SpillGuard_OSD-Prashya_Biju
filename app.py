@@ -290,6 +290,26 @@ def create_shape_visualization(original_image, shapes, visualization_type='conto
     result_rgb = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
     return result_rgb
 
+def resize_contour(contour, target_width, target_height):
+    """Resize contour to fit in target dimensions"""
+    points = contour.reshape(-1, 2)
+    x_min, y_min = points.min(axis=0)
+    x_max, y_max = points.max(axis=0)
+    
+    width = x_max - x_min
+    height = y_max - y_min
+    
+    if width == 0 or height == 0:
+        return contour
+    
+    scale = min(target_width / width, target_height / height) * 0.8
+    center_x, center_y = (x_min + x_max) / 2, (y_min + y_max) / 2
+    
+    new_points = ((points - np.array([center_x, center_y])) * scale + 
+                 np.array([target_width / 2, target_height / 2]))
+    
+    return new_points.reshape(-1, 1, 2).astype(np.int32)
+
 # Settings
 st.sidebar.header("⚙️ Shape Detection Settings")
 
@@ -394,7 +414,7 @@ if uploaded_file is not None:
                     with col1:
                         # Create individual shape visualization
                         individual_viz = np.zeros((200, 200, 3), dtype=np.uint8)
-                        contour_resized = self._resize_contour(shape['contour'], 200, 200)
+                        contour_resized = resize_contour(shape['contour'], 200, 200)
                         cv2.drawContours(individual_viz, [contour_resized], -1, (0, 0, 255), 2)
                         
                         st.image(individual_viz, use_container_width=True, caption=f"Shape {i+1}")
@@ -439,30 +459,10 @@ if uploaded_file is not None:
                         data=csv_data,
                         file_name="oil_spill_data.csv",
                         mime="text/csv"
-                )
+                    )
             
         except Exception as e:
             st.error(f"❌ Processing error: {str(e)}")
-
-def _resize_contour(contour, target_width, target_height):
-    """Resize contour to fit in target dimensions"""
-    points = contour.reshape(-1, 2)
-    x_min, y_min = points.min(axis=0)
-    x_max, y_max = points.max(axis=0)
-    
-    width = x_max - x_min
-    height = y_max - y_min
-    
-    if width == 0 or height == 0:
-        return contour
-    
-    scale = min(target_width / width, target_height / height) * 0.8
-    center_x, center_y = (x_min + x_max) / 2, (y_min + y_max) / 2
-    
-    new_points = ((points - np.array([center_x, center_y])) * scale + 
-                 np.array([target_width / 2, target_height / 2]))
-    
-    return new_points.reshape(-1, 1, 2).astype(np.int32)
 
 # File upload section
 with st.expander("📤 Upload Your Model File"):
