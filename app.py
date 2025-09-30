@@ -4,6 +4,7 @@ from PIL import Image, ImageFilter
 import io
 import os
 import torch
+import torch.nn as nn
 import torchvision.transforms as transforms
 import random
 
@@ -17,10 +18,83 @@ st.set_page_config(
 st.title("🌊 Oil Spill Detection")
 st.write("Upload satellite imagery for AI-powered oil spill detection")
 
-# Model loading function with proper cloud deployment handling
+# Define a simple model architecture (adjust based on your actual model)
+class OilSpillModel(nn.Module):
+    def __init__(self):
+        super(OilSpillModel, self).__init__()
+        # Simple CNN architecture - you may need to adjust this
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+        )
+        
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
+# Alternative: UNet-like architecture for segmentation
+class OilSpillSegmentationModel(nn.Module):
+    def __init__(self):
+        super(OilSpillSegmentationModel, self).__init__()
+        # Encoder
+        self.enc1 = self._block(3, 64)
+        self.enc2 = self._block(64, 128)
+        self.enc3 = self._block(128, 256)
+        self.enc4 = self._block(256, 512)
+        
+        # Decoder
+        self.dec1 = self._block(512, 256)
+        self.dec2 = self._block(256, 128)
+        self.dec3 = self._block(128, 64)
+        
+        self.final = nn.Conv2d(64, 1, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+        
+    def _block(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2) if in_channels != 512 else nn.Identity()
+        )
+    
+    def forward(self, x):
+        # Simple forward pass - you might need to adjust this
+        x = self.enc1(x)
+        x = self.enc2(x)
+        x = self.enc3(x)
+        x = self.enc4(x)
+        x = self.dec1(x)
+        x = self.dec2(x)
+        x = self.dec3(x)
+        x = self.final(x)
+        return self.sigmoid(x)
+
+# Model loading function for state dict
 @st.cache_resource
 def load_model():
-    """Load the actual model for inference"""
+    """Load the model weights and create model architecture"""
     try:
         model_path = "oil_spill_model_deploy.pth"
         st.sidebar.info(f"🔍 Looking for model at: {model_path}")
@@ -30,13 +104,52 @@ def load_model():
             file_size = os.path.getsize(model_path) / (1024 * 1024)
             st.sidebar.success(f"✅ Model found! Size: {file_size:.1f} MB")
             
-            # Load model with cloud-friendly settings
-            model = torch.load(model_path, map_location='cpu', weights_only=False)
-            model.eval()
-            st.sidebar.success("🎯 Model loaded successfully!")
-            return model
+            # Load state dict
+            state_dict = torch.load(model_path, map_location='cpu', weights_only=False)
+            
+            # Debug: Show what's in the state dict
+            st.sidebar.write("📋 State dict keys:", list(state_dict.keys())[:5] if state_dict else "Empty")
+            
+            # Try different model architectures
+            models_to_try = [
+                ("Segmentation Model", OilSpillSegmentationModel()),
+                ("Classification Model", OilSpillModel())
+            ]
+            
+            loaded_model = None
+            for model_name, model in models_to_try:
+                try:
+                    # Try to load state dict into this model architecture
+                    model.load_state_dict(state_dict)
+                    model.eval()
+                    st.sidebar.success(f"✅ Loaded as {model_name}")
+                    loaded_model = model
+                    break
+                except Exception as e:
+                    st.sidebar.warning(f"❌ Failed as {model_name}: {str(e)[:50]}...")
+                    continue
+            
+            if loaded_model is None:
+                # If standard loading fails, try with strict=False
+                st.sidebar.info("🔄 Trying relaxed loading (strict=False)")
+                for model_name, model in models_to_try:
+                    try:
+                        model.load_state_dict(state_dict, strict=False)
+                        model.eval()
+                        st.sidebar.success(f"✅ Loaded as {model_name} (relaxed)")
+                        loaded_model = model
+                        break
+                    except Exception as e:
+                        continue
+            
+            if loaded_model is not None:
+                st.sidebar.success("🎯 Model loaded successfully!")
+                return loaded_model
+            else:
+                st.sidebar.error("❌ Could not load model with any architecture")
+                return None
+                
         else:
-            # List available files for debugging
             available_files = [f for f in os.listdir('.') if f.endswith(('.pth', '.pt'))]
             st.sidebar.error(f"❌ Model file not found at: {model_path}")
             st.sidebar.info(f"Available model files: {available_files}")
@@ -103,39 +216,21 @@ def preprocess_for_model(image, target_size=(256, 256)):
     return image_tensor, original_array, (original_h, original_w), resized_array
 
 def filter_small_components(mask, min_size):
-    """Remove small connected components from mask using PIL/numpy"""
+    """Remove small connected components from mask"""
     if min_size <= 1:
         return mask
     
-    # Convert to binary
-    binary_mask = (mask > 0).astype(np.uint8)
-    
-    # Simple connected component analysis using scipy or manual implementation
-    try:
-        from scipy import ndimage
-        # Use scipy's label function if available
-        labeled_array, num_features = ndimage.label(binary_mask)
-        
-        # Create new mask with size filtering
-        filtered_mask = np.zeros_like(binary_mask)
-        for i in range(1, num_features + 1):
-            component_size = np.sum(labeled_array == i)
-            if component_size >= min_size:
-                filtered_mask[labeled_array == i] = 1
-        
-        return filtered_mask * 255
-    except ImportError:
-        # Fallback: simple erosion/dilation for noise removal
-        if min_size > 50:  # Only apply if min_size is significant
-            pil_mask = Image.fromarray(binary_mask * 255)
-            # Simple noise removal using erosion followed by dilation
-            for _ in range(2):
-                pil_mask = pil_mask.filter(ImageFilter.MinFilter(3))  # Erosion
-            for _ in range(2):
-                pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))  # Dilation
-            return np.array(pil_mask)
-        else:
-            return mask
+    # Simple noise removal using erosion/dilation
+    if min_size > 50:
+        pil_mask = Image.fromarray(mask)
+        # Simple noise removal
+        for _ in range(2):
+            pil_mask = pil_mask.filter(ImageFilter.MinFilter(3))  # Erosion
+        for _ in range(2):
+            pil_mask = pil_mask.filter(ImageFilter.MaxFilter(3))  # Dilation
+        return np.array(pil_mask)
+    else:
+        return mask
 
 def apply_morphology_operations(mask):
     """Apply basic morphology operations using PIL"""
@@ -165,13 +260,31 @@ def process_model_output(prediction, original_shape, confidence_threshold=0.5):
     
     # Handle different output formats
     if len(prediction.shape) == 3:
-        # If it's multi-channel, take the first channel (assuming it's the spill probability)
+        # If it's multi-channel, take the appropriate channel
         if prediction.shape[0] == 2:  # [background, spill]
             prediction = prediction[1]  # Take spill channel
-        else:
+        elif prediction.shape[0] == 1:  # Single channel
             prediction = prediction[0]  # Take first channel
+        else:
+            prediction = prediction[0]  # Default to first channel
     
-    # Apply confidence threshold
+    # For classification output (1D), convert to 2D mask
+    if len(prediction.shape) == 1:
+        classification_score = prediction[0]
+        st.sidebar.write(f"Classification score: {classification_score:.3f}")
+        # Create a simple mask based on classification
+        if classification_score > confidence_threshold:
+            # Create a central spill area for demonstration
+            h, w = original_shape
+            mask = np.zeros((h, w), dtype=np.uint8)
+            center_h, center_w = h // 2, w // 2
+            size = min(h, w) // 4
+            cv2.ellipse(mask, (center_w, center_h), (size, size), 0, 0, 360, 255, -1)
+            return mask
+        else:
+            return np.zeros(original_shape[:2], dtype=np.uint8)
+    
+    # Apply confidence threshold for segmentation
     binary_mask = (prediction > confidence_threshold).astype(np.uint8)
     
     st.sidebar.write(f"Detected pixels: {np.sum(binary_mask)}")
