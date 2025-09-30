@@ -7,14 +7,45 @@ import cv2
 from PIL import Image
 import io
 import collections
+import os
 
 # Set page config
-st.set_page_config(page_title="Oil Spill Detection - Debug", layout="wide")
+st.set_page_config(page_title="Oil Spill Detection", layout="wide")
 
-st.title("🔧 Oil Spill Detection Debug")
-st.write("Let's figure out why detection isn't working properly")
+st.title("🛢️ Oil Spill Detection")
+st.write("Upload satellite imagery to detect oil spills")
 
-# Model architecture (same as before)
+# First, let's find the model file
+st.sidebar.header("🔍 Model File Detection")
+
+def find_model_files():
+    """Find all potential model files in current directory"""
+    all_files = os.listdir('.')
+    model_files = []
+    
+    for file in all_files:
+        if any(file.endswith(ext) for ext in ['.pth', '.pt', '.pkl', '.h5', '.keras', '.onnx']):
+            size_mb = os.path.getsize(file) / (1024 * 1024)
+            model_files.append((file, size_mb))
+    
+    return model_files
+
+model_files = find_model_files()
+
+if model_files:
+    st.sidebar.success(f"✅ Found {len(model_files)} model file(s):")
+    for file, size in model_files:
+        st.sidebar.write(f"📦 {file} ({size:.1f} MB)")
+else:
+    st.sidebar.error("❌ No model files found!")
+    st.sidebar.info("""
+    **Please ensure:**
+    1. Your model file is in the same directory as app.py
+    2. File has extension: .pth, .pt, .pkl, or .h5
+    3. File is committed to Git (if deploying)
+    """)
+
+# Model architecture
 class OilSpillModel(nn.Module):
     def __init__(self, num_classes=1):
         super(OilSpillModel, self).__init__()
@@ -38,24 +69,80 @@ class OilSpillModel(nn.Module):
 
 @st.cache_resource
 def load_model():
-    try:
-        checkpoint = torch.load('oil_spill_model_deploy.pth', map_location='cpu')
-        if isinstance(checkpoint, collections.OrderedDict):
-            model = OilSpillModel(num_classes=1)
-            model.load_state_dict(checkpoint, strict=False)
-            model.eval()
-            st.sidebar.success("✅ Model loaded with strict=False")
-            return model
-    except Exception as e:
-        st.sidebar.error(f"❌ Loading failed: {str(e)}")
+    """Try to load any model file we find"""
+    model_files = find_model_files()
+    
+    if not model_files:
+        st.sidebar.error("❌ No model files found to load!")
         return None
+    
+    # Try each model file
+    for model_file, size in model_files:
+        try:
+            st.sidebar.info(f"🔄 Trying to load: {model_file}")
+            checkpoint = torch.load(model_file, map_location='cpu')
+            
+            if isinstance(checkpoint, collections.OrderedDict):
+                model = OilSpillModel(num_classes=1)
+                model.load_state_dict(checkpoint, strict=False)
+                model.eval()
+                st.sidebar.success(f"✅ Loaded {model_file} successfully!")
+                return model
+            elif isinstance(checkpoint, torch.nn.Module):
+                checkpoint.eval()
+                st.sidebar.success(f"✅ Loaded full model from {model_file}!")
+                return checkpoint
+                
+        except Exception as e:
+            st.sidebar.warning(f"⚠️ Failed to load {model_file}: {str(e)[:100]}...")
+            continue
+    
+    st.sidebar.error("❌ All model files failed to load!")
+    return None
 
+# Load model
 model = load_model()
 
-def preprocess_simple(image, size=512):
-    """Simple preprocessing"""
+# Demo mode if no model is found
+if model is None:
+    st.warning("""
+    ⚠️ **No model loaded - Running in DEMO MODE**
+    
+    The app will show sample outputs but won't perform real detection.
+    
+    **To fix this:**
+    1. **Ensure your model file is in the repository**
+    2. **Common model file names:**
+       - `model.pth`, `model.pt`, `unet_model.pth`
+       - `oil_spill_model.pth`, `segmentation_model.pth`
+    3. **Check your repository structure:**
+    ```
+    your-repo/
+    ├── app.py
+    ├── requirements.txt
+    ├── your-model-file.pth  # ← This should exist!
+    └── other files...
+    ```
+    """)
+    
+    # Create a dummy model for demo
+    class DemoModel:
+        def __init__(self):
+            self.is_demo = True
+        
+        def __call__(self, x):
+            # Return random "detections" for demo
+            batch, channels, height, width = x.shape
+            fake_output = torch.rand(1, 1, height, width) * 0.1  # Low confidence
+            return torch.sigmoid(fake_output)
+    
+    model = DemoModel()
+
+# Simple preprocessing
+def preprocess_image(image, size=512):
     original_size = image.size
-    if image.mode != 'RGB': image = image.convert('RGB')
+    if image.mode != 'RGB': 
+        image = image.convert('RGB')
     image_resized = image.resize((size, size))
     
     img_array = np.array(image_resized) / 255.0
@@ -67,216 +154,187 @@ def preprocess_simple(image, size=512):
     img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0)
     return img_tensor, original_size
 
-if model is not None:
-    st.header("📡 Upload Problematic Image")
+# Main application
+st.header("📡 Upload Satellite Imagery")
+
+uploaded_file = st.file_uploader(
+    "Choose satellite image", 
+    type=['png', 'jpg', 'jpeg', 'tiff', 'bmp']
+)
+
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    original_size = image.size
     
-    uploaded_file = st.file_uploader("Choose an image where detection fails", type=['png', 'jpg', 'jpeg'])
+    # Display layout
+    col1, col2, col3 = st.columns(3)
     
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Original Image")
-            st.image(image, use_container_width=True)
-            st.write(f"Size: {image.size}")
-        
-        # Process image
-        input_tensor, original_size = preprocess_simple(image, size=512)
-        device = next(model.parameters()).device
-        input_tensor = input_tensor.to(device)
-        
-        # Make prediction
-        with torch.no_grad():
-            output = model(input_tensor)
-            if isinstance(output, (list, tuple)): output = output[0]
+    with col1:
+        st.subheader("🛰️ Original Image")
+        st.image(image, use_container_width=True)
+        st.write(f"Size: {original_size}")
+    
+    # Check if we're in demo mode
+    is_demo = hasattr(model, 'is_demo') and model.is_demo
+    
+    if is_demo:
+        st.warning("🔸 **DEMO MODE**: Showing sample detection (not real AI)")
+    
+    # Process and predict
+    with st.spinner("🔍 Analyzing for oil spills..." if not is_demo else "🔸 Demo mode..."):
+        try:
+            # Preprocess
+            input_tensor, original_size = preprocess_image(image, size=512)
+            
+            if not is_demo:
+                # Move to model device for real model
+                device = next(model.parameters()).device
+                input_tensor = input_tensor.to(device)
+            
+            # Prediction
+            with torch.no_grad():
+                output = model(input_tensor)
+            
+            # Handle output
+            if isinstance(output, (list, tuple)):
+                output = output[0]
+            
+            # Get probability map
             prob_map = output.squeeze().cpu().numpy()
-        
-        # Analyze model output in detail
-        st.subheader("🔍 Detailed Model Output Analysis")
-        
-        # Basic statistics
-        st.write("**Confidence Statistics:**")
-        col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
-        
-        with col_stats1:
-            min_conf = np.min(prob_map)
-            st.metric("Min", f"{min_conf:.6f}")
-        with col_stats2:
-            max_conf = np.max(prob_map)
-            st.metric("Max", f"{max_conf:.6f}")
-        with col_stats3:
-            mean_conf = np.mean(prob_map)
-            st.metric("Mean", f"{mean_conf:.6f}")
-        with col_stats4:
-            std_conf = np.std(prob_map)
-            st.metric("Std", f"{std_conf:.6f}")
-        
-        # Percentile analysis
-        st.write("**Percentile Analysis:**")
-        percentiles = [1, 5, 10, 25, 50, 75, 90, 95, 99, 99.9]
-        percentile_values = [np.percentile(prob_map, p) for p in percentiles]
-        
-        cols = st.columns(5)
-        for i, (col, p, val) in enumerate(zip(cols, percentiles, percentile_values)):
-            with col:
-                st.write(f"{p}%: {val:.6f}")
-        
-        # Pixel count analysis
-        st.write("**Pixel Count Analysis:**")
-        thresholds = [0.001, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9]
-        threshold_data = []
-        
-        for thresh in thresholds:
-            pixels_above = np.sum(prob_map > thresh)
-            percentage = (pixels_above / prob_map.size) * 100
-            threshold_data.append((thresh, pixels_above, percentage))
-        
-        # Display threshold analysis
-        st.write("**Threshold Analysis:**")
-        analysis_cols = st.columns(3)
-        for i, (col, (thresh, pixels, percent)) in enumerate(zip(analysis_cols, threshold_data)):
-            with col:
-                st.write(f"**>{thresh:.3f}**: {pixels:,} px ({percent:.4f}%)")
-        
-        # Visualize different thresholds
-        st.subheader("🎯 Visual Threshold Testing")
-        
-        # Test very low thresholds to see if ANY detection appears
-        st.write("**Testing Very Low Thresholds (0.001 to 0.1):**")
-        low_thresholds = [0.001, 0.005, 0.01, 0.05, 0.1]
-        low_cols = st.columns(5)
-        
-        for col, thresh in zip(low_cols, low_thresholds):
-            with col:
-                mask = (prob_map > thresh).astype(np.uint8) * 255
-                mask_resized = cv2.resize(mask, original_size, interpolation=cv2.INTER_NEAREST)
-                
-                # Create overlay
-                original_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-                colored = np.zeros_like(original_cv)
-                colored[mask_resized > 0] = [0, 0, 255]
-                blended = cv2.addWeighted(original_cv, 0.8, colored, 0.2, 0)
-                blended_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
-                
-                pixels = np.sum(mask_resized > 0)
-                coverage = (pixels / mask_resized.size) * 100
-                
-                st.image(blended_rgb, use_container_width=True, caption=f"Thresh: {thresh}")
-                st.write(f"{coverage:.6f}% coverage")
-        
-        # Test normal thresholds
-        st.write("**Testing Normal Thresholds (0.2 to 0.9):**")
-        normal_thresholds = [0.2, 0.3, 0.5, 0.7, 0.9]
-        normal_cols = st.columns(5)
-        
-        for col, thresh in zip(normal_cols, normal_thresholds):
-            with col:
-                mask = (prob_map > thresh).astype(np.uint8) * 255
-                mask_resized = cv2.resize(mask, original_size, interpolation=cv2.INTER_NEAREST)
-                
-                original_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-                colored = np.zeros_like(original_cv)
-                colored[mask_resized > 0] = [0, 0, 255]
-                blended = cv2.addWeighted(original_cv, 0.8, colored, 0.2, 0)
-                blended_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
-                
-                pixels = np.sum(mask_resized > 0)
-                coverage = (pixels / mask_resized.size) * 100
-                
-                st.image(blended_rgb, use_container_width=True, caption=f"Thresh: {thresh}")
-                st.write(f"{coverage:.6f}% coverage")
-        
-        # Show raw probability map
-        st.subheader("📊 Raw Probability Visualization")
-        
-        # Create heatmap of probabilities
-        prob_display = (prob_map * 255).astype(np.uint8)
-        prob_colored = cv2.applyColorMap(prob_display, cv2.COLORMAP_JET)
-        prob_resized = cv2.resize(prob_colored, original_size)
-        
-        col_prob1, col_prob2 = st.columns(2)
-        with col_prob1:
-            st.image(prob_resized, use_container_width=True, caption="Probability Heatmap")
-        with col_prob2:
-            # Show the most confident regions
-            high_conf_mask = (prob_map > np.percentile(prob_map, 99)).astype(np.uint8) * 255
-            high_conf_resized = cv2.resize(high_conf_mask, original_size)
-            st.image(high_conf_resized, use_container_width=True, caption="Top 1% Most Confident Regions")
-        
-        # Diagnosis
-        st.subheader("🩺 Diagnosis")
-        
-        if max_conf < 0.01:
-            st.error("""
-            **❌ CRITICAL ISSUE: Model is producing extremely low confidence values**
             
-            **Possible causes:**
-            1. **Wrong preprocessing** - Model expects different normalization
-            2. **Architecture mismatch** - Model weights don't match our architecture
-            3. **Trained on different data** - Model expects specific input characteristics
-            4. **Model is broken** - Weights might be corrupted or incorrectly saved
+            # For demo mode, add some "fake" detections
+            if is_demo:
+                # Create some artificial "oil spill" patterns for demo
+                h, w = prob_map.shape
+                y, x = np.ogrid[:h, :w]
+                center_y, center_x = h // 2, w // 2
+                mask = ((x - center_x)**2 + (y - center_y)**2 <= min(h, w)**2 // 16)
+                prob_map[mask] = np.random.uniform(0.3, 0.8, size=mask.sum())
             
-            **Next steps:**
-            - Try different preprocessing (BGR vs RGB, different normalization)
-            - Check if model was trained on similar images
-            - Verify the model architecture matches training
-            """)
-        elif max_conf < 0.1:
-            st.warning("""
-            **⚠️ Model is very uncertain**
+            # Use auto threshold
+            prob_255 = (prob_map * 255).astype(np.uint8)
+            if len(np.unique(prob_255)) > 1:
+                try:
+                    threshold, _ = cv2.threshold(prob_255, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    confidence_threshold = threshold / 255.0
+                except:
+                    confidence_threshold = 0.5
+            else:
+                confidence_threshold = 0.5
             
-            **Possible causes:**
-            1. **Threshold too high** - Try thresholds below 0.1
-            2. **Input mismatch** - Images differ from training data
-            3. **Model needs calibration** - Outputs are not well-calibrated
+            # Create mask
+            binary_mask = (prob_map > confidence_threshold).astype(np.uint8) * 255
+            binary_mask_resized = cv2.resize(binary_mask, original_size, interpolation=cv2.INTER_NEAREST)
             
-            **Try:** Use thresholds between 0.01 and 0.1
-            """)
-        elif mean_conf > 0.8:
-            st.warning("""
-            **⚠️ Model is overconfident**
+            # Create overlay
+            original_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            colored_mask = np.zeros_like(original_cv)
+            colored_mask[binary_mask_resized > 0] = [0, 0, 255]  # Red for oil
+            blended = cv2.addWeighted(original_cv, 0.7, colored_mask, 0.3, 0)
+            blended_rgb = cv2.cvtColor(blended, cv2.COLOR_BGR2RGB)
             
-            **Possible causes:**
-            1. **Overfitting** - Model memorized training data
-            2. **Poor calibration** - Output probabilities don't reflect true confidence
+            # Display results
+            with col2:
+                st.subheader("🎭 Detection Mask")
+                st.image(binary_mask_resized, use_container_width=True)
+                st.write(f"Threshold: {confidence_threshold:.3f}")
+                if is_demo:
+                    st.caption("🔸 Demo detection pattern")
             
-            **Try:** Use higher thresholds (0.7-0.9)
-            """)
-        else:
-            st.info("""
-            **ℹ️ Model output looks reasonable**
+            with col3:
+                st.subheader("🛢️ Oil Spill Overlay")
+                st.image(blended_rgb, use_container_width=True)
+                if is_demo:
+                    st.caption("🔸 Demo overlay")
             
-            The issue might be:
-            1. **Wrong threshold** - Adjust threshold up/down
-            2. **Post-processing needed** - Clean up noisy detections
-            3. **Training data mismatch** - Model trained on different types of oil spills
+            # Statistics
+            st.subheader("📊 Detection Analysis")
             
-            **Try different thresholds and check if any look correct**
-            """)
+            total_pixels = binary_mask_resized.size
+            oil_pixels = np.sum(binary_mask_resized > 0)
+            oil_percentage = (oil_pixels / total_pixels) * 100
+            
+            col_stats1, col_stats2, col_stats3 = st.columns(3)
+            
+            with col_stats1:
+                st.metric("Oil Pixels", f"{oil_pixels:,}")
+            with col_stats2:
+                st.metric("Coverage", f"{oil_percentage:.4f}%")
+            with col_stats3:
+                st.metric("Max Confidence", f"{np.max(prob_map):.3f}")
+            
+            # Alert system
+            st.subheader("🚨 Detection Alert")
+            if oil_pixels > 0:
+                if oil_percentage > 1:
+                    st.error(f"🚨 OIL SPILL DETECTED! {oil_percentage:.4f}% coverage")
+                else:
+                    st.warning(f"⚠️ Potential oil sheen: {oil_percentage:.4f}% coverage")
+            else:
+                st.success("✅ No oil spills detected")
+            
+            if is_demo:
+                st.info("🔸 This is a DEMO. Upload your model file for real detection.")
+            
+        except Exception as e:
+            st.error(f"❌ Processing error: {str(e)}")
 
-else:
-    st.error("Model failed to load")
+# File upload option for model
+with st.expander("📤 Upload Model File (Alternative)"):
+    st.info("If your model file isn't in the repository, you can upload it directly:")
+    
+    uploaded_model = st.file_uploader(
+        "Upload your model file", 
+        type=['pth', 'pt', 'pkl'],
+        help="Upload .pth, .pt, or .pkl model files"
+    )
+    
+    if uploaded_model is not None:
+        try:
+            # Save uploaded file
+            with open("uploaded_model.pth", "wb") as f:
+                f.write(uploaded_model.getvalue())
+            
+            st.success("✅ Model file uploaded! Refresh the app to use it.")
+            st.info("The app should automatically detect and load 'uploaded_model.pth' after refresh.")
+            
+        except Exception as e:
+            st.error(f"❌ Upload failed: {str(e)}")
 
-# Quick fixes to try
-with st.expander("🚀 Quick Fixes to Try"):
+# Troubleshooting guide
+with st.expander("🔧 Setup Guide"):
     st.markdown("""
-    **Based on the analysis above, try these:**
+    **To get this working with your model:**
     
-    **If max confidence < 0.01:**
-    1. Try preprocessing with BGR instead of RGB
-    2. Try no normalization (simple 0-1 scaling)
-    3. Check if model expects different input size
+    1. **Ensure your model file is in the repository:**
+       ```bash
+       # Check what files exist
+       ls -la
+       
+       # If your file has a different name, rename it:
+       mv your_actual_model_file.pth oil_spill_model_deploy.pth
+       ```
     
-    **If you see some detection but it's wrong:**
-    1. Try threshold around the 95th percentile value
-    2. Enable mask cleaning to remove small detections
-    3. Try morphological operations to clean up the mask
+    2. **Common model file locations:**
+       - Same directory as `app.py`
+       - In a `models/` folder
+       - Named: `model.pth`, `unet.pth`, `best_model.pth`
     
-    **If no detection at any threshold:**
-    The model might not be working with your images. We may need to:
-    - Get the exact model architecture from training
-    - Check the training data characteristics
-    - Retrain or fine-tune the model
+    3. **For large files (>100MB):**
+       ```bash
+       # Use Git LFS for large model files
+       git lfs install
+       git lfs track "*.pth"
+       git add .gitattributes
+       git add your_model.pth
+       ```
+    
+    4. **Check your repository structure:**
+       ```
+       your-repo/
+       ├── app.py
+       ├── requirements.txt
+       ├── oil_spill_model_deploy.pth  # ← Your model file
+       └── other files...
+       ```
     """)
