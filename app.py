@@ -1,269 +1,179 @@
 import streamlit as st
-import numpy as np
-from PIL import Image, ImageFilter
-import io
-import os
 import torch
-import torch.nn as nn
-import torchvision.transforms as transforms
-import torchvision.models as models
+import segmentation_models_pytorch as smp
+from PIL import Image
+import numpy as np
+import io
+import requests
+import os
+import matplotlib.pyplot as plt
 
-# Set page config
-st.set_page_config(
-    page_title="Oil Spill Detection",
-    page_icon="🌊",
-    layout="wide"
-)
+# -----------------------------
+# Dropbox Model URL
+# -----------------------------
+MODEL_PATH = "oil_spill_model_deploy.pth"
+DROPBOX_URL = "https://www.dropbox.com/scl/fi/stl47n6ixrzv59xs2jt4m/oil_spill_model_deploy.pth?rlkey=rojyk0fq73mk8tai8jc3exrev&dl=1"
 
-st.title("🌊 Oil Spill Detection")
-st.write("Upload satellite imagery for AI-powered oil spill detection")
+# -----------------------------
+# Create UNet Model
+# -----------------------------
+def create_unet_model():
+    model = smp.Unet(
+        encoder_name="resnet34",
+        encoder_weights=None,
+        in_channels=3,
+        classes=1,
+        activation=None,
+    )
+    return model
 
-# Look for model files
-def find_model_file():
-    model_path = "oil_spill_model_deploy.pth"
-    if os.path.exists(model_path):
-        st.sidebar.success(f"✅ Model loaded: {os.path.getsize(model_path) / (1024 * 1024):.1f} MB")
-        return model_path
-    else:
-        st.sidebar.error("❌ Model file not found")
-        return None
+# -----------------------------
+# Download model if missing
+# -----------------------------
+def download_model():
+    if not os.path.exists(MODEL_PATH):
+        st.info("🔽 Downloading model from Dropbox...")
+        try:
+            response = requests.get(DROPBOX_URL, stream=True, timeout=60)
+            response.raise_for_status()
+            total_size = int(response.headers.get('content-length', 0))
+            progress_bar = st.progress(0)
+            downloaded = 0
+            with open(MODEL_PATH, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            progress = downloaded / total_size
+                            progress_bar.progress(progress)
+            progress_bar.empty()
+            st.success("✅ Model downloaded!")
+        except Exception as e:
+            st.error(f"❌ Error downloading model: {e}")
+            return False
+    return True
 
-# Define the model architecture (same as your local version)
-class OilSpillSegmentationModel(nn.Module):
-    def __init__(self):
-        super(OilSpillSegmentationModel, self).__init__()
-        self.encoder = models.resnet50(pretrained=False)
-        self.encoder = nn.Sequential(*list(self.encoder.children())[:-2])
-        
-        self.decoder = nn.Sequential(
-            nn.Conv2d(2048, 512, 3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            
-            nn.Conv2d(512, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            
-            nn.Conv2d(256, 128, 3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            
-            nn.Conv2d(128, 64, 3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-        )
-        
-        self.segmentation_head = nn.Conv2d(64, 1, 1)
-        self.sigmoid = nn.Sigmoid()
-    
-    def forward(self, x):
-        features = self.encoder(x)
-        x = self.decoder(features)
-        x = self.segmentation_head(x)
-        x = self.sigmoid(x)
-        return x
-
+# -----------------------------
+# Load Model
+# -----------------------------
 @st.cache_resource
 def load_model():
-    """Load the model"""
-    model_path = find_model_file()
-    
-    if model_path is None:
-        return None
-    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    st.write(f"🖥️ Using device: {device}")
+
+    if not download_model():
+        return None, device
+
     try:
-        # Load state dict
-        state_dict = torch.load(model_path, map_location='cpu')
-        
-        # Create model
-        model = OilSpillSegmentationModel()
-        
-        # Load weights with strict=False
-        model.load_state_dict(state_dict, strict=False)
+        model = create_unet_model()
+        checkpoint = torch.load(MODEL_PATH, map_location=device)
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+
+        # Remove DataParallel prefix if exists
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith("module."):
+                new_state_dict[k[7:]] = v
+            else:
+                new_state_dict[k] = v
+
+        model.load_state_dict(new_state_dict)
+        model.to(device)
         model.eval()
-        
-        return model
-        
+        st.success("✅ Model loaded successfully!")
+        return model, device
+
     except Exception as e:
-        st.sidebar.error(f"❌ Model loading failed: {e}")
-        return None
+        st.error(f"❌ Error loading model: {e}")
+        return None, device
 
-# Load model
-model = load_model()
+# -----------------------------
+# Preprocess Image
+# -----------------------------
+def preprocess_image(image):
+    image_resized = image.resize((256, 256))
+    img_array = np.array(image_resized).astype(np.float32) / 255.0
 
-# SIMPLIFIED Settings - like your local version
-st.sidebar.header("⚙️ Detection Settings")
-confidence_threshold = st.sidebar.slider(
-    "Confidence Threshold", 0.1, 0.99, 0.5, 0.01,  # Medium default
-    help="Adjust detection sensitivity"
-)
+    # ImageNet normalization
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+    img_array = (img_array - mean) / std
 
-target_size = st.sidebar.selectbox(
-    "Processing Size", [256, 512, 224], index=0,
-    help="Image size for model processing"
-)
+    # Float32 tensor
+    img_tensor = torch.from_numpy(img_array).permute(2,0,1).unsqueeze(0).float()
+    return img_tensor, image_resized
 
-# MINIMAL filtering - like your local version
-apply_smoothing = st.sidebar.checkbox(
-    "Apply Smoothing", value=True,
-    help="Light smoothing to clean up edges"
-)
+# -----------------------------
+# Streamlit App
+# -----------------------------
+st.set_page_config(page_title="Oil Spill Detection", page_icon="🌊", layout="wide")
+st.title("🌊 Oil Spill Segmentation with UNet (ResNet34)")
+st.write("Upload a satellite image to detect oil spills.")
 
-def preprocess_for_model(image, target_size=(256, 256)):
-    """Preprocess image for model inference"""
-    if isinstance(image, Image.Image):
-        original_pil = image.copy()
-        original_array = np.array(image)
-    else:
-        original_pil = Image.fromarray(image)
-        original_array = image.copy()
-    
-    original_h, original_w = original_array.shape[:2]
-    
-    transform = transforms.Compose([
-        transforms.Resize(target_size),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    image_tensor = transform(original_pil).unsqueeze(0)
-    return image_tensor, original_array, (original_h, original_w)
+with st.sidebar:
+    st.header("⚙️ Settings")
+    confidence_threshold = st.slider("Confidence Threshold", 0.1, 0.9, 0.5, 0.1)
+    st.header("ℹ️ About")
+    st.write("This app uses a UNet model (ResNet34 backbone) for oil spill segmentation.")
 
-def process_model_output(prediction, original_shape, confidence_threshold=0.5):
-    """Simple processing like your local version"""
-    if isinstance(prediction, torch.Tensor):
-        prediction = prediction.squeeze().detach().cpu().numpy()
-    
-    # Simple thresholding - no complex filtering
-    binary_mask = (prediction > confidence_threshold).astype(np.uint8)
-    
-    # Resize to original dimensions
-    mask_pil = Image.fromarray((binary_mask * 255).astype(np.uint8))
-    mask_resized = mask_pil.resize(
-        (original_shape[1], original_shape[0]), 
-        Image.Resampling.NEAREST
-    )
-    final_mask = np.array(mask_resized)
-    
-    # Light smoothing only if requested
-    if apply_smoothing:
-        pil_mask = Image.fromarray(final_mask)
-        pil_mask = pil_mask.filter(ImageFilter.MedianFilter(3))  # Light median filter
-        final_mask = np.array(pil_mask)
-    
-    return final_mask
+# Initialize model
+if 'model' not in st.session_state:
+    with st.spinner("🔄 Loading model..."):
+        model, device = load_model()
+        st.session_state.model = model
+        st.session_state.device = device
 
-def create_overlay(original_image, mask, alpha=0.6):
-    """Create overlay visualization like your local version"""
-    if isinstance(original_image, np.ndarray):
-        original_pil = Image.fromarray(original_image.astype(np.uint8))
-    else:
-        original_pil = original_image
-    
-    original_rgba = original_pil.convert('RGBA')
-    
-    # Use semi-transparent red for overlay
-    red_overlay = Image.new('RGBA', original_rgba.size, (255, 50, 50, int(255 * alpha)))
-    
-    mask_binary = mask > 0
-    mask_pil = Image.fromarray((mask_binary * 255).astype(np.uint8)).convert('L')
-    
-    result = Image.composite(red_overlay, original_rgba, mask_pil)
-    return result.convert('RGB')
-
-# Main app interface
-uploaded_file = st.file_uploader(
-    "📤 Upload Satellite Image", 
-    type=["jpg", "jpeg", "png", "tiff", "bmp"],
-    help="Upload satellite imagery for oil spill analysis"
-)
+# Upload image
+uploaded_file = st.file_uploader("📤 Upload Satellite Image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    try:
-        # Load image
-        image = Image.open(uploaded_file).convert("RGB")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.subheader("🛰️ Original Image")
-            st.image(image, use_container_width=True)
-            st.caption(f"Dimensions: {image.size}")
-        
-        with st.spinner("🔄 Analyzing image for oil spills..."):
-            # Preprocess
-            image_tensor, original_array, original_shape = preprocess_for_model(
-                image, target_size=(target_size, target_size)
-            )
-            
-            if model is not None:
-                try:
-                    with torch.no_grad():
-                        prediction = model(image_tensor)
-                    st.success("✅ AI Model Analysis Complete")
-                    
-                    # Simple processing like local version
-                    final_mask = process_model_output(prediction, original_shape, confidence_threshold)
-                    
-                except Exception as e:
-                    st.error(f"❌ Model inference failed: {e}")
-                    # Fallback to empty mask
-                    final_mask = np.zeros(original_shape[:2], dtype=np.uint8)
-            else:
-                st.error("❌ Model not available")
-                final_mask = np.zeros(original_shape[:2], dtype=np.uint8)
-            
-            # Display results - MATCHING YOUR LOCAL LAYOUT
-            with col2:
-                st.subheader("Processed Image")
-                mask_display = Image.fromarray(final_mask)
-                st.image(mask_display, use_container_width=True, clamp=True)
-                st.caption("Oil Spill Detection Mask")
-            
-            with col3:
-                st.subheader("Oil Spill Overlay")
-                overlay_result = create_overlay(original_array, final_mask)
-                st.image(overlay_result, use_container_width=True)
-                st.caption("Red areas show detected oil spills")
-            
-            # Simple analysis
-            spill_pixels = np.sum(final_mask > 0)
-            total_pixels = final_mask.size
-            coverage_percent = (spill_pixels / total_pixels) * 100
-            
+    image = Image.open(uploaded_file).convert("RGB")
+    st.image(image, caption="Original Image", use_column_width=True)
+
+    if st.session_state.model is None:
+        st.error("❌ Model failed to load. Please check weights.")
+    else:
+        with st.spinner("🔄 Predicting..."):
+            input_tensor, processed_image = preprocess_image(image)
+            input_tensor = input_tensor.to(st.session_state.device, dtype=torch.float32)
+
+            with torch.no_grad():
+                output = st.session_state.model(input_tensor)
+                prediction = torch.sigmoid(output).squeeze().cpu().numpy()
+
+            # Binary mask
+            binary_mask = (prediction > confidence_threshold).astype(np.uint8) * 255
+
+            # Overlay mask on original
+            overlay = processed_image.copy()
+            overlay_np = np.array(overlay)
+            overlay_np[binary_mask>0] = [255,0,0]  # red for oil spill
+            overlay_img = Image.fromarray(overlay_np)
+
+            col1, col2 = st.columns(2)
+            col1.image(processed_image, caption="Processed Image", use_column_width=True)
+            col2.image(overlay_img, caption="Oil Spill Overlay", use_column_width=True)
+
+            # Metrics
+            spill_area = np.sum(binary_mask>0) / (binary_mask.shape[0]*binary_mask.shape[1]) * 100
+            max_conf = np.max(prediction) * 100
+
             st.subheader("📊 Detection Results")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Spill Coverage", f"{coverage_percent:.2f}%")
-            with col2:
-                st.metric("Affected Pixels", f"{spill_pixels:,}")
-            with col3:
-                if spill_pixels > 0:
-                    st.error("🚨 Oil Spill Detected")
-                else:
-                    st.success("✅ No Spill Detected")
+            st.metric("Spill Area", f"{spill_area:.2f}%")
+            st.metric("Max Confidence", f"{max_conf:.1f}%")
+            status = "🔴 Spill Detected" if spill_area > 1.0 else "🟢 No Spill"
+            st.metric("Status", status)
 
-    except Exception as e:
-        st.error(f"❌ Error processing image: {e}")
-
+            # Download mask
+            mask_image = Image.fromarray(binary_mask)
+            buf = io.BytesIO()
+            mask_image.save(buf, format="PNG")
+            st.download_button(
+                label="💾 Download Prediction Mask",
+                data=buf.getvalue(),
+                file_name="oil_spill_mask.png",
+                mime="image/png"
+            )
 else:
-    st.info("👆 Upload a satellite image to begin analysis")
-
-# Simple status
-if model is not None:
-    st.sidebar.success("✅ Model Ready")
-else:
-    st.sidebar.error("❌ Model Not Available")
-
-# Quick tips
-st.sidebar.header("💡 Quick Tips")
-st.sidebar.markdown("""
-- Start with **confidence 0.5**
-- Adjust up for **fewer detections**
-- Adjust down for **more detections**
-- Enable **smoothing** for cleaner edges
-""")
+    st.info("👆 Please upload a satellite image to begin detection.")
