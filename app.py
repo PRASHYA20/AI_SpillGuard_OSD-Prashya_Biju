@@ -105,7 +105,7 @@ def preprocess_image(image):
     return img_tensor, image_resized
 
 # -----------------------------
-# ENHANCED DETECTION FUNCTIONS
+# ENHANCED DETECTION FUNCTIONS - KEEPING WHAT WORKS
 # -----------------------------
 def enhanced_oil_detection(model, image, device, confidence_threshold=0.5):
     """Enhanced detection with multiple strategies for difficult images"""
@@ -178,149 +178,68 @@ def enhanced_oil_detection(model, image, device, confidence_threshold=0.5):
     
     return pred1, processed_img  # fallback
 
-def adaptive_threshold_detection(prediction, method="otsu"):
-    """Use adaptive thresholding instead of fixed threshold"""
-    from skimage import filters
+# -----------------------------
+# FIXED OVERLAY FUNCTION - KEEPING YOUR WORKING APPROACH
+# -----------------------------
+def create_proper_overlay(processed_image, binary_mask):
+    """Create overlay using your working approach"""
+    overlay = processed_image.copy()
+    overlay_np = np.array(overlay)
     
-    if method == "otsu":
-        threshold = filters.threshold_otsu(prediction)
-    elif method == "mean":
-        threshold = np.mean(prediction)
-    elif method == "median":
-        threshold = np.median(prediction)
-    else:
-        threshold = np.percentile(prediction, 75)  # Top 25%
+    # Apply red color to detected areas - EXACTLY like your working code
+    overlay_np[binary_mask > 0] = [255, 0, 0]  # red for oil spill
     
-    binary_mask = (prediction > threshold).astype(np.uint8) * 255
-    return binary_mask, threshold
+    overlay_img = Image.fromarray(overlay_np)
+    return overlay_img
 
-def test_all_strategies_with_adaptive_threshold(model, image, device, base_confidence):
-    """Test all strategies with adaptive thresholding"""
-    st.subheader("🔍 Testing All Strategies with Adaptive Thresholding")
+def debug_prediction_info(prediction, binary_mask, confidence_threshold):
+    """Debug information to see what's happening"""
+    st.subheader("🔍 Debug Information")
     
-    strategies = []
+    col1, col2, col3 = st.columns(3)
     
-    # Test different preprocessing strategies
-    enhancements = [
-        ("Standard", lambda img: img),
-        ("High Contrast", lambda img: ImageEnhance.Contrast(img).enhance(2.5)),
-        ("Very High Contrast", lambda img: ImageEnhance.Contrast(img).enhance(3.5)),
-        ("Sharpened", lambda img: img.filter(ImageFilter.SHARPEN)),
-        ("Double Sharpened", lambda img: img.filter(ImageFilter.SHARPEN).filter(ImageFilter.SHARPEN)),
-        ("Brightened", lambda img: ImageEnhance.Brightness(img).enhance(1.6)),
-        ("Color Enhanced", lambda img: ImageEnhance.Color(img).enhance(2.0)),
-        ("Edge Enhance", lambda img: img.filter(ImageFilter.EDGE_ENHANCE_MORE)),
-    ]
+    with col1:
+        st.write("**Prediction Stats:**")
+        st.write(f"Min: {prediction.min():.6f}")
+        st.write(f"Max: {prediction.max():.6f}")
+        st.write(f"Mean: {prediction.mean():.6f}")
+        st.write(f"Std: {prediction.std():.6f}")
     
-    for name, enhance_func in enhancements:
-        enhanced_img = enhance_func(image)
-        input_tensor, processed_img = preprocess_image(enhanced_img)
-        input_tensor = input_tensor.to(device, dtype=torch.float32)
-        with torch.no_grad():
-            output = model(input_tensor)
-            pred = torch.sigmoid(output).squeeze().cpu().numpy()
-        strategies.append((name, pred, processed_img, enhanced_img))
+    with col2:
+        st.write("**Threshold Analysis:**")
+        st.write(f"Threshold: {confidence_threshold:.6f}")
+        st.write(f"Pixels above: {np.sum(prediction > confidence_threshold)}")
+        st.write(f"Total pixels: {prediction.size}")
+        st.write(f"Percentage: {np.sum(prediction > confidence_threshold) / prediction.size * 100:.6f}%")
     
-    # Display all strategies with multiple thresholding methods
-    st.write("### Fixed Threshold vs Adaptive Threshold")
-    
-    for strategy_name, prediction, processed_img, enhanced_img in strategies:
-        st.write(f"---")
-        st.write(f"#### 🔧 {strategy_name}")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.image(enhanced_img, caption=f"Enhanced Image", use_column_width=True)
-        
-        # Fixed low threshold
-        with col2:
-            low_thresh = base_confidence * 0.3  # Very low threshold
-            binary_mask = (prediction > low_thresh).astype(np.uint8) * 255
-            overlay = processed_img.copy()
-            overlay_np = np.array(overlay)
-            overlay_np[binary_mask>0] = [255,0,0]
-            overlay_img = Image.fromarray(overlay_np)
-            st.image(overlay_img, caption=f"Low Thresh ({low_thresh:.3f})", use_column_width=True)
-            spill_area = np.sum(binary_mask>0) / binary_mask.size * 100
-            st.write(f"Area: {spill_area:.2f}%")
-        
-        # Fixed medium threshold
-        with col3:
-            binary_mask = (prediction > base_confidence).astype(np.uint8) * 255
-            overlay = processed_img.copy()
-            overlay_np = np.array(overlay)
-            overlay_np[binary_mask>0] = [255,0,0]
-            overlay_img = Image.fromarray(overlay_np)
-            st.image(overlay_img, caption=f"Med Thresh ({base_confidence:.3f})", use_column_width=True)
-            spill_area = np.sum(binary_mask>0) / binary_mask.size * 100
-            st.write(f"Area: {spill_area:.2f}%")
-        
-        # Adaptive threshold
-        with col4:
-            binary_mask, auto_thresh = adaptive_threshold_detection(prediction, "otsu")
-            overlay = processed_img.copy()
-            overlay_np = np.array(overlay)
-            overlay_np[binary_mask>0] = [255,0,0]
-            overlay_img = Image.fromarray(overlay_np)
-            st.image(overlay_img, caption=f"Auto Thresh ({auto_thresh:.3f})", use_column_width=True)
-            spill_area = np.sum(binary_mask>0) / binary_mask.size * 100
-            st.write(f"Area: {spill_area:.2f}%")
-        
-        # Show prediction statistics
-        st.write(f"**Prediction Stats:** Min: {prediction.min():.4f}, Max: {prediction.max():.4f}, Mean: {prediction.mean():.4f}")
-
-def debug_prediction_heatmap(prediction, processed_image):
-    """Show prediction heatmap to understand what the model sees"""
-    st.subheader("🎨 Prediction Heatmap Analysis")
-    
-    # Normalize prediction for visualization
-    pred_normalized = (prediction - prediction.min()) / (prediction.max() - prediction.min())
-    
-    # Create heatmap
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
-    
-    # Original image
-    ax1.imshow(processed_image)
-    ax1.set_title('Processed Image')
-    ax1.axis('off')
-    
-    # Prediction heatmap
-    im = ax2.imshow(prediction, cmap='hot')
-    ax2.set_title('Model Confidence Heatmap')
-    ax2.axis('off')
-    plt.colorbar(im, ax=ax2)
-    
-    # Thresholded areas
-    threshold = np.percentile(prediction, 80)  # Show top 20%
-    binary_vis = (prediction > threshold).astype(np.float32)
-    ax3.imshow(binary_vis, cmap='cool')
-    ax3.set_title(f'Top 20% Confidence (>{threshold:.3f})')
-    ax3.axis('off')
-    
-    st.pyplot(fig)
+    with col3:
+        st.write("**Mask Info:**")
+        st.write(f"Mask sum: {np.sum(binary_mask > 0)}")
+        st.write(f"Mask unique values: {np.unique(binary_mask)}")
+        st.write(f"Non-zero pixels: {np.count_nonzero(binary_mask)}")
 
 # -----------------------------
-# Streamlit App
+# Streamlit App - USING YOUR WORKING STRUCTURE
 # -----------------------------
 st.set_page_config(page_title="Oil Spill Detection", page_icon="🌊", layout="wide")
-st.title("🌊 Advanced Oil Spill Detection")
-st.write("Upload a satellite image to detect oil spills. Use advanced modes for difficult images.")
+st.title("🌊 Oil Spill Detection - Fixed Version")
+st.write("Upload a satellite image to detect oil spills.")
 
 with st.sidebar:
     st.header("⚙️ Settings")
-    confidence_threshold = st.slider("Confidence Threshold", 0.01, 0.9, 0.1, 0.01)
+    confidence_threshold = st.slider("Confidence Threshold", 0.001, 0.9, 0.1, 0.001)
     
     st.header("🎛️ Detection Mode")
     detection_mode = st.radio(
         "Choose detection mode:",
-        ["Standard", "Enhanced", "Advanced Testing", "Debug Analysis"]
+        ["Standard", "Enhanced"]
     )
     
+    show_debug = st.checkbox("Show Debug Info", value=True)
+    
     st.header("ℹ️ Tips")
-    st.write("• Use **Advanced Testing** for difficult images")
-    st.write("• Try **very low thresholds** (0.01-0.1) for faint spills")
-    st.write("• **Debug Analysis** shows what the model 'sees'")
+    st.write("• Use very low thresholds (0.001-0.01) for faint spills")
+    st.write("• Enhanced mode works better for difficult images")
 
 # Initialize model
 if 'model' not in st.session_state:
@@ -339,78 +258,82 @@ if uploaded_file is not None:
     if st.session_state.model is None:
         st.error("❌ Model failed to load. Please check weights.")
     else:
-        if detection_mode == "Advanced Testing":
-            # Test all strategies with adaptive thresholding
-            test_all_strategies_with_adaptive_threshold(
-                st.session_state.model, 
-                image, 
-                st.session_state.device,
-                confidence_threshold
-            )
-        elif detection_mode == "Debug Analysis":
-            # Show detailed analysis
-            input_tensor, processed_image = preprocess_image(image)
-            input_tensor = input_tensor.to(st.session_state.device, dtype=torch.float32)
-            with torch.no_grad():
-                output = st.session_state.model(input_tensor)
-                prediction = torch.sigmoid(output).squeeze().cpu().numpy()
-            
-            debug_prediction_heatmap(prediction, processed_image)
-            
-        else:
-            with st.spinner("🔄 Running detection..."):
-                if detection_mode == "Enhanced":
-                    # Use enhanced detection
-                    prediction, processed_image = enhanced_oil_detection(
-                        st.session_state.model, 
-                        image, 
-                        st.session_state.device,
-                        confidence_threshold
-                    )
-                else:  # Standard mode
-                    input_tensor, processed_image = preprocess_image(image)
-                    input_tensor = input_tensor.to(st.session_state.device, dtype=torch.float32)
-                    with torch.no_grad():
-                        output = st.session_state.model(input_tensor)
-                        prediction = torch.sigmoid(output).squeeze().cpu().numpy()
-
-                # Binary mask
-                binary_mask = (prediction > confidence_threshold).astype(np.uint8) * 255
-
-                # Overlay mask on original
-                overlay = processed_image.copy()
-                overlay_np = np.array(overlay)
-                overlay_np[binary_mask>0] = [255,0,0]
-                overlay_img = Image.fromarray(overlay_np)
-
-                col1, col2 = st.columns(2)
-                col1.image(processed_image, caption="Processed Image", use_column_width=True)
-                col2.image(overlay_img, caption="Oil Spill Overlay", use_column_width=True)
-
-                # Metrics
-                spill_area = np.sum(binary_mask>0) / (binary_mask.shape[0]*binary_mask.shape[1]) * 100
-                max_conf = np.max(prediction) * 100
-                mean_conf = np.mean(prediction) * 100
-
-                st.subheader("📊 Detection Results")
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Spill Area", f"{spill_area:.2f}%")
-                col2.metric("Max Confidence", f"{max_conf:.1f}%")
-                col3.metric("Mean Confidence", f"{mean_conf:.1f}%")
-                
-                status = "🔴 Spill Detected" if spill_area > 0.1 else "🟢 No Spill"
-                st.metric("Status", status)
-
-                # Download mask
-                mask_image = Image.fromarray(binary_mask)
-                buf = io.BytesIO()
-                mask_image.save(buf, format="PNG")
-                st.download_button(
-                    label="💾 Download Prediction Mask",
-                    data=buf.getvalue(),
-                    file_name="oil_spill_mask.png",
-                    mime="image/png"
+        with st.spinner("🔄 Running detection..."):
+            if detection_mode == "Enhanced":
+                # Use enhanced detection
+                prediction, processed_image = enhanced_oil_detection(
+                    st.session_state.model, 
+                    image, 
+                    st.session_state.device,
+                    confidence_threshold
                 )
+            else:  # Standard mode
+                input_tensor, processed_image = preprocess_image(image)
+                input_tensor = input_tensor.to(st.session_state.device, dtype=torch.float32)
+                with torch.no_grad():
+                    output = st.session_state.model(input_tensor)
+                    prediction = torch.sigmoid(output).squeeze().cpu().numpy()
+
+            # Binary mask - USING YOUR WORKING APPROACH
+            binary_mask = (prediction > confidence_threshold).astype(np.uint8) * 255
+
+            # Overlay mask on original - USING YOUR WORKING APPROACH
+            overlay_img = create_proper_overlay(processed_image, binary_mask)
+
+            # Display results - KEEPING YOUR WORKING LAYOUT
+            col1, col2 = st.columns(2)
+            col1.image(processed_image, caption="Processed Image", use_column_width=True)
+            col2.image(overlay_img, caption="Oil Spill Overlay", use_column_width=True)
+
+            # Metrics - USING YOUR WORKING CALCULATIONS
+            spill_pixels = np.sum(binary_mask > 0)
+            total_pixels = binary_mask.shape[0] * binary_mask.shape[1]
+            spill_area = (spill_pixels / total_pixels) * 100
+            max_conf = np.max(prediction) * 100
+            mean_conf = np.mean(prediction) * 100
+
+            st.subheader("📊 Detection Results")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Spill Area", f"{spill_area:.4f}%")
+            col2.metric("Spill Pixels", f"{spill_pixels}")
+            col3.metric("Max Confidence", f"{max_conf:.2f}%")
+            col4.metric("Mean Confidence", f"{mean_conf:.2f}%")
+            
+            # Status determination - MORE SENSITIVE
+            status = "🔴 Spill Detected" if spill_pixels > 0 else "🟢 No Spill"
+            st.metric("Status", status)
+
+            # Show the actual mask
+            st.subheader("🎭 Detection Mask")
+            mask_image = Image.fromarray(binary_mask)
+            st.image(mask_image, caption="Binary Detection Mask (White = Oil Spill)", use_column_width=True, clamp=True)
+
+            # Download mask
+            buf = io.BytesIO()
+            mask_image.save(buf, format="PNG")
+            st.download_button(
+                label="💾 Download Prediction Mask",
+                data=buf.getvalue(),
+                file_name="oil_spill_mask.png",
+                mime="image/png"
+            )
+
+            # Debug information
+            if show_debug:
+                debug_prediction_info(prediction, binary_mask, confidence_threshold)
+
+                # Show what happens with different thresholds
+                st.subheader("🎯 Threshold Testing")
+                test_thresholds = [0.001, 0.01, 0.05, 0.1, 0.2]
+                cols = st.columns(len(test_thresholds))
+                
+                for idx, test_thresh in enumerate(test_thresholds):
+                    with cols[idx]:
+                        test_mask = (prediction > test_thresh).astype(np.uint8) * 255
+                        test_overlay = create_proper_overlay(processed_image, test_mask)
+                        st.image(test_overlay, caption=f"Thresh: {test_thresh:.3f}", use_column_width=True)
+                        test_area = np.sum(test_mask > 0) / test_mask.size * 100
+                        st.write(f"Area: {test_area:.4f}%")
 
 else:
     st.info("👆 Please upload a satellite image to begin detection.")
